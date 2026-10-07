@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # watch-pr.sh <number> [interval-seconds]: run from inside the repo. Watches a pull request: a GitHub PR
 # through gh when origin is on github.com, otherwise a GitLab merge request through glab.
-# Prints one line per change of "<state> pipeline=<status> merge=<status>" and exits when it is
-# merged or closed, its pipeline passed, failed, was canceled or skipped, or it conflicts with its target branch.
+# Prints "<state> pipeline=<status> merge=<status>" when the state or pipeline changes, or a conflict
+# appears (merge alone flips between checking and ci_still_running while a pipeline runs), and exits
+# when it is merged or closed, its pipeline passed, failed, was canceled or skipped, it conflicts
+# with its target branch, or it has no pipeline: at once in a repo without CI config, after 2 minutes
+# in one with it (rules that start no job).
 # Meant to run under Monitor: every line is an event.
 set -u
 n="${1:?usage: watch-pr.sh <number> [interval-seconds]}"
@@ -11,6 +14,9 @@ case "$(git remote get-url origin 2>/dev/null)" in
   *github.com*) forge=github ;;
   *) forge=gitlab ;;
 esac
+# With CI config, a pipeline can take a moment to appear after a push; without it, none ever will.
+grace=0
+[ -n "$(git ls-tree --name-only HEAD .github/workflows .gitlab-ci.yml 2>/dev/null)" ] && grace=120
 
 status() {
   if [ "$forge" = github ]; then
@@ -34,9 +40,12 @@ last=""
 while :; do
   now="$(status | tr -d '\r')"
   [ -n "$now" ] || now="unreachable (VPN or token?)"
-  if [ "$now" != "$last" ]; then echo "$now"; last="$now"; fi
+  key="${now%% merge=*}"
+  case "$now" in *merge=conflict*) key="$now" ;; esac
+  if [ "$key" != "$last" ]; then echo "$now"; last="$key"; fi
   case "$now" in
     merged*|closed*|*pipeline=success*|*pipeline=skipped*|*pipeline=failed*|*pipeline=canceled*|*merge=conflict*) exit 0 ;;
   esac
+  case "$now" in *pipeline=none*) [ "$SECONDS" -ge "$grace" ] && { echo "no pipeline after ${SECONDS}s"; exit 0; } ;; esac
   sleep "$interval"
 done
