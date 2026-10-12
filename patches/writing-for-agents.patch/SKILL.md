@@ -25,7 +25,7 @@ When running `<skill>`: <additions or overrides, as steps, each with its complet
 
 Where it lives:
 
-- **Global**: `skills/patches/<skill>.patch/` in EnderWolf50/skills, plus the name in the EnderWolf50/skills list of chezmoi `.chezmoidata/skills.toml` so it installs.
+- **Global**: `patches/<skill>.patch/` in EnderWolf50/skills, plus the name in the EnderWolf50/skills list of chezmoi `.chezmoidata/skills.toml` so it installs.
 - **Project**: `.claude/skills/<skill>.patch/` or `.agents/skills/<skill>.patch/` in that repo.
 
 The `skill-patches` plugin loads it: when `<skill>` runs, through the Skill tool (PostToolUse) or a typed `/<skill>` (UserPromptExpansion), every patch found is injected after the skill, global first and project last, so the project patch wins on conflict and any patch wins over the skill. Done: the change sits in the owner's skill or in its patch, and upstream files are unchanged.
