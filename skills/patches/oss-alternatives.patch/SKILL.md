@@ -1,5 +1,5 @@
 ---
-name: oss-alternatives-patch
+name: oss-alternatives.patch
 description: "Patch for oss-alternatives: the right TinyFish CLI package in the install hint."
 disable-model-invocation: true
 user-invocable: false

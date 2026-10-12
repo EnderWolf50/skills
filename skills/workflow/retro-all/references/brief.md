@@ -8,7 +8,7 @@ Inputs:
 - When the bucket is a repo, read its checkout from origin (`git show origin/<default>:<path>`); a local checkout may be stale.
 
 Find, with evidence (session-id8 + date + quote or count):
-1. **Skill candidates** (priority): a workflow the user spelled out as multi-step instructions in two or more sessions, or the same correction/redo cycle recurring. For each: proposed skill name (or `<skill>-patch` when it extends someone else's skill), trigger, the steps it encodes, the sessions it would have helped, and any installed skill that already covers it (then the finding is "skill X unused / insufficient because ...").
+1. **Skill candidates** (priority): a workflow the user spelled out as multi-step instructions in two or more sessions, or the same correction/redo cycle recurring. For each: proposed skill name (or `<skill>.patch` when it extends someone else's skill), trigger, the steps it encodes, the sessions it would have helped, and any installed skill that already covers it (then the finding is "skill X unused / insufficient because ...").
 2. **Repeated corrections**: the user pushing back ("不是", "又", "我說過", "wrong", a redo). Name the standing rule or check that prevents it: mechanical → linter, hook or CI job; judgement → coding standards or a skill.
 3. **Navigation, information access, tool economy**: long searches, missing information, repeated expensive or failing tool calls. A recurring `ERR:` line is an environment fix.
 4. **Repo guardrails** (repo buckets only): the repo's CLAUDE.md/AGENTS.md, package scripts, CI workflows, pre-commit hooks; a missing or unwired check that relates to a mistake seen.

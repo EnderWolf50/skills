@@ -1,5 +1,5 @@
 ---
-name: retro-patch
+name: retro.patch
 description: "Patch for retro: check findings against the retro ledger and record them there."
 disable-model-invocation: true
 user-invocable: false
