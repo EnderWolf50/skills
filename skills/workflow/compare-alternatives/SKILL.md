@@ -3,6 +3,8 @@ name: compare-alternatives
 description: Compare candidate tools, libraries or apps side by side for the user and recommend one. Use when asked for alternatives to X, "X vs Y vs Z", whether a tool beats what the user already uses, or which project to pick by GitHub stars and community reception.
 ---
 
+**Route first.** Candidates that are all npm packages → run `npm-package-comparator` instead (it adds downloads, bundle size and Snyk vulnerabilities). Finding self-hostable open source replacements for a paid SaaS or API → run `oss-alternatives` instead. Anything else, or the user asks for this table, → continue here.
+
 The answer is a chat reply: one table and a recommendation, in the user's language. Every cell carries a number or a fact from a source fetched this session.
 
 1. **Candidates.** Take the ones the user named, add the user's current tool when one fills the same role (`.chezmoidata/tools.toml` in the dotfiles repo, `~/.claude/settings.json` plugins, `~/.agents/skills`), and fill up to five with the most-starred ones found through `tinyfish search query` (the `use-tinyfish` skill). Done: each candidate has a GitHub repo, or is marked closed-source.
