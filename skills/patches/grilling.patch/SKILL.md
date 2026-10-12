@@ -1,5 +1,5 @@
 ---
-name: grilling-patch
+name: grilling.patch
 description: "Patch for grilling: research-backed options with pros and cons; undecided choices stay out of docs."
 disable-model-invocation: true
 user-invocable: false

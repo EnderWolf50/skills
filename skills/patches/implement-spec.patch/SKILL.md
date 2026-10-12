@@ -1,5 +1,5 @@
 ---
-name: implement-spec-patch
+name: implement-spec.patch
 description: "Patch for implement-spec: subagents stop the background processes they start before reporting."
 disable-model-invocation: true
 user-invocable: false

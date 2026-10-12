@@ -1,5 +1,5 @@
 ---
-name: implement-patch
+name: implement.patch
 description: "Patch for implement: move off the default branch into a fresh worktree before the first edit."
 disable-model-invocation: true
 user-invocable: false
