@@ -1,0 +1,13 @@
+---
+name: figma-frames
+description: Read a Figma design through the REST API — list frames, render them to PNG, dump text, colour, shadow and spacing values. Use when given a figma.com link, or asked to apply, match or compare a UI against a Figma design.
+---
+
+The design is read with `scripts/figma.py` (Python stdlib; token in `FIGMA_API_KEY`, which it never prints). The goal is a value table the implementation maps onto the project's own tokens, plus a picture of every state to compare against.
+
+1. **Find the frames.** `python scripts/figma.py frames <url>` lists the children of the URL's `node-id` (a page or a section); `--match <text>` filters by name, `--node <id>` drills into one frame. A canvas often holds several generations of one screen: the newest are usually the ones next to the spec notes, and state frames are named by state (`f1 填寫`, `f3 驗證失效`). Done: one frame id per state the user asked for, and any `Note` frames beside them read.
+2. **Render and look.** `python scripts/figma.py render <url> --ids <id,id,...> --out <scratchpad dir>` writes one PNG per frame; Read each. Done: you can name every visible difference between the states.
+3. **Dump the values.** `frames <url> --node <frame-id>` shows the frame's children; pick the content container (often `Card` or `Content`), skipping app chrome (menus, nav bars, sidebars), then `python scripts/figma.py styles <url> --node <content-id>`. Each line carries size, `font=size/weight/lh`, `color`/`fill` as `#rrggbb@alpha`, `stroke`, `r`, shadows, `gap` and `pad`. Done: every element of the change has its values.
+4. **Map to the project.** Match each value to an existing variable, mixin or component of the codebase (a colour to its palette variable, `#232332@0.85` to the opacity-grey token, a shadow to its shadow variable) before writing a literal; a value with no match is reported, not invented. Done: a table of design value → project token, with the unmatched ones listed.
+
+Text in a design is part of the design: report copy that differs from the current UI and ask before changing translated strings. Spec notes (`Note`, `規格說明`) are requirements, not decoration.
