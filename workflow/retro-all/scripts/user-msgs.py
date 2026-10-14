@@ -2,7 +2,7 @@
 """Print a session's own user messages: user-msgs.py <session-id-prefix> [max-chars, default 300]"""
 import glob, json, os, sys
 
-from digest import ROOTS
+from digest import roots
 
 
 def text(c):
@@ -16,7 +16,7 @@ def text(c):
 if len(sys.argv) < 2:
     sys.exit(__doc__)
 sid, width = sys.argv[1], int(sys.argv[2]) if len(sys.argv) > 2 else 300
-files = [f for r in ROOTS for f in glob.glob(f'{r}/*/{sid}*.jsonl')]
+files = [f for r in roots() for f in glob.glob(f'{r}/*/{sid}*.jsonl')]
 if not files:
     sys.exit(f'no transcript for {sid}')
 for f in files:

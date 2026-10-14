@@ -20,16 +20,23 @@ def wsl_distros():
     return out.decode('utf-16-le', errors='replace').replace('\0', '').split()
 
 
-# Both sides of a Windows + WSL machine, whichever side runs this: Windows reads WSL through \\wsl.localhost,
-# WSL reads Windows through /mnt/c.
-if os.name == 'nt':
-    OTHER = [os.path.dirname(p) for d in wsl_distros() for p in glob.glob(rf'\\wsl.localhost\{d}\home\*\.claude\projects')]
-else:
-    OTHER = [os.path.dirname(p) for p in glob.glob('/mnt/c/Users/*/.claude/projects')]
-ROOTS = [os.path.join(HOME, '.claude', 'projects')] + [os.path.join(c, 'projects') for c in OTHER]
+WINDOWS_SIDE = [] if os.name == 'nt' else [os.path.dirname(p) for p in glob.glob('/mnt/c/Users/*/.claude/projects')]
+
+
+def roots():
+    """Both sides of a Windows + WSL machine, whichever side runs this: Windows reads WSL through \\\\wsl.localhost,
+    WSL reads Windows through /mnt/c. A function, not a constant: reading a stopped distro boots it, so only the
+    commands that scan sessions pay for it."""
+    if os.name == 'nt':
+        other = [p for d in wsl_distros() for p in glob.glob(rf'\\wsl.localhost\{d}\home\*\.claude\projects')]
+    else:
+        other = [os.path.join(c, 'projects') for c in WINDOWS_SIDE]
+    return [os.path.join(HOME, '.claude', 'projects')] + other
+
+
 # One ledger per machine, on the Windows side when there is one, so both sides read and write the same file.
 # ponytail: the first Windows user with a ~/.claude wins; pass --ledger on a machine shared by several.
-LEDGER = os.path.join(OTHER[0] if OTHER and os.name != 'nt' else os.path.join(HOME, '.claude'), 'retro')
+LEDGER = os.path.join((WINDOWS_SIDE or [os.path.join(HOME, '.claude')])[0], 'retro')
 # First user message of the security-guidance plugin's review sub-sessions (both its passes).
 REVIEW_PREFIXES = ('Review this change for security vulnerabilities', 'You previously flagged these candidate vulnerabilities')
 MAX_USER_MSGS, MAX_ERRS = 25, 6
@@ -186,7 +193,7 @@ def digest(args):
     seen = {} if args.all else read_ledger(args.ledger)
     os.makedirs(args.out, exist_ok=True)
     buckets, pending = collections.defaultdict(list), []
-    for sid, path in find_sessions(args.roots).items():
+    for sid, path in find_sessions(args.roots or [r for r in roots() if os.path.isdir(r)]).items():
         if args.session and not sid.startswith(args.session):
             continue
         size, prev = os.path.getsize(path), int(seen[sid][2]) if sid in seen else 0
@@ -196,7 +203,7 @@ def digest(args):
         s = read_session(path, prev)
         if s:
             buckets[bucket(s['cwd'], wsl_prefix(path))].append((s['ts'], render(sid, path, s)))
-    with open(os.path.join(args.out, 'pending.tsv'), 'w', encoding='utf-8') as w:
+    with open(os.path.join(args.out, 'pending.tsv'), 'w', encoding='utf-8', newline='\n') as w:
         w.writelines(pending)
     summary = []
     for b, blocks in buckets.items():
@@ -226,7 +233,7 @@ def mark(args):
         rows[sid] = [sid, path, size, now]
     os.makedirs(args.ledger, exist_ok=True)
     p = os.path.join(args.ledger, 'sessions.tsv')
-    with open(p + '.tmp', 'w', encoding='utf-8') as w:
+    with open(p + '.tmp', 'w', encoding='utf-8', newline='\n') as w:
         w.writelines('\t'.join(r) + '\n' for r in sorted(rows.values(), key=lambda r: r[0]))
     os.replace(p + '.tmp', p)
     print(f'{len(rows)} sessions in {p}')
@@ -239,7 +246,7 @@ def main(argv=None):
     ap.add_argument('--session', metavar='ID8', help='digest only the session whose id starts with ID8')
     ap.add_argument('--mark', metavar='DIR', help="record DIR/pending.tsv as reviewed")
     ap.add_argument('--ledger', default=LEDGER)
-    ap.add_argument('--roots', nargs='+', default=[r for r in ROOTS if os.path.isdir(r)])
+    ap.add_argument('--roots', nargs='+', help='transcript roots (default: both sides of this machine)')
     ap.add_argument('--max-kb', type=int, default=150, help='split a bucket into parts above this size')
     args = ap.parse_args(argv)
     mark(args) if args.mark else digest(args)
