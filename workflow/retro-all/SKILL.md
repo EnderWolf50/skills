@@ -12,7 +12,7 @@ Scripts live in `~/.agents/skills/retro-all/scripts/`; run them with `python3` (
 
 One ledger per machine holds the state between runs: `~/.claude/retro/`, on the Windows side of a Windows + WSL machine (`/mnt/c/Users/<user>/.claude/retro/` from WSL), so a run from either side reads and writes the same files. `ledger.py index` prints its path. A second ledger left on the WSL side by an older version is merged in once with `ledger.py import <its path>`.
 
-- `sessions.tsv`: `session_id<TAB>transcript_path<TAB>size_bytes<TAB>reviewed_at`, written only by `digest.py --mark`. A listed session is skipped next run unless its transcript grew, and a grown one is digested from the recorded size on.
+- `sessions.tsv`: `session_id<TAB>transcript_path<TAB>size_bytes<TAB>reviewed_at`, written by `digest.py --mark` (and merged by `ledger.py import`). A listed session is skipped next run unless its transcript grew, and a grown one is digested from the recorded size on.
 - `findings/F-<n>.md`: one file per finding. A finding is never deleted: a dropped one becomes `wontfix`, a duplicate becomes `wontfix` with `fix: duplicate of F-<m>`.
 
   ```
