@@ -2,12 +2,15 @@
 # watch-pr.sh <number> [interval-seconds]: run from inside the repo. Watches a pull request: a GitHub PR
 # through gh when origin is on github.com, otherwise a GitLab merge request through glab.
 # Prints "<state> pipeline=<status> merge=<status>" when the state or pipeline changes, or a conflict
-# appears (merge alone flips between checking and ci_still_running while a pipeline runs), and exits
+# appears (merge alone flips between checking and ci_still_running while a pipeline runs; the starting
+# state is not printed unless it is already final, so the first event is real news), and exits
 # when it is merged or closed, its pipeline passed, failed, was canceled or skipped, it conflicts
 # with its target branch, or it has no pipeline: at once in a repo without CI config, after 2 minutes
 # in one with it (rules that start no job).
 # On a failed pipeline it also prints "target=<branch> pipeline=<status>" for the target branch's latest
 # finished pipeline: failed there too means the failure is inherited, not the pull request's own.
+# Once the pipeline finished, a last line "jobs=<name>:<status> ..." lists what ran (empty: path rules
+# started no job), so nothing has to query the jobs afterwards.
 # Meant to run under Monitor: every line is an event.
 set -u
 n="${1:?usage: watch-pr.sh <number> [interval-seconds]}"
@@ -52,17 +55,33 @@ target_status() {
   echo "target=$b pipeline=$(printf '%s' "$st" | tr -d '\r')"
 }
 
+jobs() {
+  if [ "$forge" = github ]; then
+    gh pr view "$n" --json statusCheckRollup 2>/dev/null | jq -r \
+      '"jobs=" + ([.statusCheckRollup[]? | "\(.name // .context):\(.conclusion // .state // .status | ascii_downcase)"] | join(" "))'
+  else
+    p="$(glab api "projects/:id/merge_requests/$n" 2>/dev/null | jq -r '.head_pipeline.id // empty' | tr -d '\r')"
+    [ -n "$p" ] || { echo "jobs="; return; }
+    glab api "projects/:id/pipelines/$p/jobs?per_page=100" 2>/dev/null | jq -r \
+      '"jobs=" + ([.[] | "\(.name):\(.status)"] | join(" "))'
+  fi | tr -d '\r'
+}
+
 last=""
+first=1
 while :; do
   now="$(status | tr -d '\r')"
   [ -n "$now" ] || now="unreachable (VPN or token?)"
   key="${now%% merge=*}"
   case "$now" in *merge=conflict*) key="$now" ;; esac
-  if [ "$key" != "$last" ]; then echo "$now"; last="$key"; fi
   case "$now" in
-    *pipeline=failed*) target_status; exit 0 ;;
-    merged*|closed*|*pipeline=success*|*pipeline=skipped*|*pipeline=failed*|*pipeline=canceled*|*merge=conflict*) exit 0 ;;
+    *pipeline=failed*) echo "$now"; target_status; jobs; exit 0 ;;
+    *pipeline=success*|*pipeline=skipped*|*pipeline=canceled*) echo "$now"; jobs; exit 0 ;;
+    merged*|closed*|*merge=conflict*) echo "$now"; exit 0 ;;
   esac
+  case "$now" in unreachable*) first=0 ;; esac
+  [ "$key" != "$last" ] && [ "$first" = 0 ] && echo "$now"
+  last="$key"; first=0
   case "$now" in *pipeline=none*) [ "$SECONDS" -ge "$grace" ] && { echo "no pipeline after ${SECONDS}s"; exit 0; } ;; esac
   sleep "$interval"
 done
