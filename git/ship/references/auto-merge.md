@@ -2,7 +2,7 @@
 
 Done: auto-merge armed, or `merged` after the user chose an immediate merge.
 
-- GitHub: `gh pr merge <n> --auto --delete-branch` with the repo's merge method (`--squash`, `--merge` or `--rebase`). It needs "Allow auto-merge" in the repo settings: `gh api repos/{owner}/{repo} --jq .allow_auto_merge` (`gh repo view` has no such field). When it is `false`, the user's ask for auto-merge means: watch to green, then merge per `~/.agents/skills/land/SKILL.md`. With no required checks GitHub merges at once, so ask the user first when `gh pr checks <n>` lists none.
+- GitHub: `gh pr merge <n> --auto --delete-branch` with the repo's merge method (`--squash`, `--merge` or `--rebase`). It needs "Allow auto-merge" in the repo settings: `gh api repos/{owner}/{repo} --jq .allow_auto_merge` (`gh repo view` has no such field). When it is `false`, the user's ask for auto-merge means: watch to green, then merge per `~/.agents/skills/ship/references/land.md`. With no required checks GitHub merges at once, so ask the user first when `gh pr checks <n>` lists none.
 - GitLab: `glab mr merge --auto-merge` merges *immediately* while the pipeline is still `pending`; arm it through the API, which accepts a pending pipeline:
   ```sh
   glab api --method PUT "projects/:id/merge_requests/<iid>/merge" \

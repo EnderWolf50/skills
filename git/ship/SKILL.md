@@ -1,17 +1,20 @@
 ---
 name: ship
-description: Take finished work to a pull request ready for review - commit, push, open the pull request, optionally arm auto-merge, watch the pipeline, report its URL. Use when the user says ship, push, "commit & push", "push & PR/MR", "open/create a PR/MR", "ship everything done so far", "ship and land", or asks for auto-merge or pipeline monitoring.
+description: Take work through its pull request - ship (commit, push, open the pull request, optionally arm auto-merge, watch the pipeline), land (merge, delete the branch and worktree, sync the main checkout) and prune (clean merged branches and worktrees out of a repo, rebase what remains). Use when the user says ship, land or prune, push, "commit & push", "push & PR/MR", "open/create a PR/MR", "ship everything done so far", "ship and land", "land all", "merge these", asks for auto-merge or pipeline monitoring, or asks to clean up, tidy or prune branches, worktrees or the git environment.
 ---
 
-Each step ends on its own done-condition; stop and report when one cannot be met. The forge follows `git remote get-url origin`: github.com is GitHub (`gh`), anything else is GitLab (`glab`, where a pull request is a merge request).
+Three tasks, each in its own reference. Pick them from the user's words (`/ship land`, "ship and land", "prune this repo"), read only those, and run them in order: ship, then land, then prune.
 
-1. **Where.** `git rev-parse --show-toplevel` must be a linked worktree on a feature branch, never the main checkout or the default branch. Work still uncommitted in the main checkout moves over without touching the main checkout's state (it is shared with other sessions: never stash, reset or commit there): `git diff HEAD > <tmp>/ship.patch` plus a copy of each untracked file, `git worktree add -b <branch> <path> origin/<default>`, `git apply <tmp>/ship.patch` there, copy the untracked files in. The copy left in the main checkout clears when land syncs it (its files then match the merged tree). Done: branch name printed and it is not the default branch.
-2. **Commit** with explicit paths (never `-a`), message per the repo's `AGENTS.md` git workflow. Done: `git status --short` lists nothing you meant to ship.
-3. **Push**: `git push -u origin HEAD`. Done: the remote branch exists.
-4. **Open** the pull request per the repo's pull/merge request doc (e.g. `docs/agents/merge-request.md`: template, labels, evidence); with no such doc, `gh pr create --fill` / `glab mr create --fill`. A pushed branch without an open pull request gets one without asking. Target the default branch unless the work stacks on another open pull request's branch; name the stack in the report. Done: its number and URL are known (the create command prints the URL; `gh pr view <n> --json url` / `glab mr view <n>` otherwise).
-5. **Auto-merge**, only when the user asked for it: arm it per `references/auto-merge.md`. Otherwise the pull request waits for the user's review.
-6. **Watch**: run `bash ~/.agents/skills/ship/scripts/watch-pr.sh <number>` from the repo under Monitor. It is the only polling: no `sleep` loops, no extra `gh pr checks` / `glab ci get` while it runs or after it ends. It prints `<state> pipeline=<status> merge=<status>` when the state or pipeline changes or a conflict appears, and exits on a green or skipped pipeline, `merged`, `closed`, a failed/canceled pipeline, or a conflict with the target branch, with a last line `jobs=<name>:<status> ...` once the pipeline finished. On a failure, read the red job (`gh run view <run-id> --log-failed`, or `glab ci trace <job-id>`) and report its cause, as inherited when the script's `target=<branch> pipeline=failed` line shows the target branch red too; on a conflict, rebase per `references/rebase.md`, re-arm auto-merge if it was armed, and watch again. Every later push to the branch is watched again the same way. Done: pipeline green, or the failing job's cause or the unresolved conflict reported.
-7. **Land**, when the user's ask also says land or merge ("ship and land", "ship & merge", "ship all of them and land"): once the pipeline is green, land per `~/.agents/skills/land/SKILL.md`. Auto-merge armed instead lands it on the forge; read the state (`gh pr view <n> --json state` / `glab mr view <n>`), and land a merged one for its cleanup. Done: landed, or the step land stopped at reported.
-8. **Report** the pull request URL as a markdown link the user can click to review, with the pipeline result (the jobs line) and whether auto-merge is armed. Without auto-merge or step 7, merging is the user's call after review: end with "say `land` to merge and clean up".
+| Task | When | Reference |
+|---|---|---|
+| **ship** | finished work goes to a pull request ready for review; the default for a bare `/ship` | `references/ship.md` |
+| **land** | merge a pull request and clean up after it, or clean up after one merged | `references/land.md` |
+| **prune** | clean a whole repo: merged branches, worktrees, stray folders; rebase what stays | `references/prune.md` |
 
-The harness may deny a command (a merge, a delete). Finish every step it does not block, then hand the user the denied commands as one `!` block (Git Bash syntax) in that same message, never "the block above".
+A task does not start the next one on its own: ship stops at a green pipeline for the user's review unless the ask also says land or merge; land ends by deleting the repo's other merged branches only.
+
+Shared by all three:
+- Each step ends on its own done-condition; stop and report when one cannot be met.
+- The forge follows `git remote get-url origin`: github.com is GitHub (`gh`), anything else is GitLab (`glab`, where a pull request is a merge request).
+- Pipelines are watched with `bash ~/.agents/skills/ship/scripts/watch-pr.sh <number>` under Monitor, never a hand-written poll. Auto-merge is armed per `references/auto-merge.md`; a branch is rebased per `references/rebase.md`.
+- The harness may deny a command (a merge, a delete, a process stop). Finish every step it does not block, then hand the user the denied commands as one `!` block (Git Bash syntax) in that same message, never "the block above".
