@@ -67,12 +67,16 @@ with tempfile.TemporaryDirectory() as t:
     open(f'{ledger}/findings/F-5.md', 'w').write('# F-5 Taken\nstatus: open\ncategory: skill\n')
     assert run('--ledger', ledger, 'new', 'navigation', 'Lost file', mod=ledger_py).rstrip().endswith('F-6.md')
     assert open(f'{ledger}/findings/F-6.md').read().startswith('# F-6 Lost file\nstatus: open\ncategory: navigation\n')
+    open(f'{ledger}/findings/F-9.md', 'w').close()   # claimed by a concurrent `new`, not yet written
+    assert run('--ledger', ledger, 'new', 'skill', 'a | b', mod=ledger_py).rstrip().endswith('F-7.md')
+    assert '| a \\| b |' in open(f'{ledger}/findings.md').read(), 'a | in a title must not split the index row'
+    os.remove(f'{ledger}/findings/F-9.md')
     other = os.path.join(t, 'other')
     os.makedirs(other)
     open(f'{other}/findings.md', 'w').write('# Retro findings\n\n## F-1 From WSL\nstatus: open\ncategory: skill\n')
     open(f'{other}/sessions.tsv', 'w').write('zzzz0000\t/x.jsonl\t9\t2026-10-01\n')
     res = run('--ledger', ledger, 'import', other, mod=ledger_py)
-    assert 'F-1 -> F-7: From WSL' in res and 'imported-from: F-1' in open(f'{ledger}/findings/F-7.md').read(), res
+    assert 'F-1 -> F-8: From WSL' in res and 'imported-from: F-1' in open(f'{ledger}/findings/F-8.md').read(), res
     assert 'zzzz0000' in open(f'{ledger}/sessions.tsv').read()
 
     run('--mark', out, '--ledger', ledger)
