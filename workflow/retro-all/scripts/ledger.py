@@ -10,7 +10,7 @@ The first command on a ledger whose findings.md still holds the finding blocks s
 """
 import argparse, json, os, re, sys
 
-from digest import LEDGER, read_ledger
+from digest import LEDGER, complete_lines, read_ledger, utf8_safe_stdout
 
 STATUSES = ('open', 'in-progress', 'fixed', 'wontfix', 'watch')
 CATEGORIES = ('skill', 'patch', 'correction', 'guardrail', 'navigation', 'tool-economy', 'information-access')
@@ -18,12 +18,13 @@ LIVE = ('open', 'in-progress', 'fixed', 'watch')   # statuses whose recurrence m
 
 
 def parse(path):
-    body = open(path, encoding='utf-8').read()
+    body = open(path, encoding='utf-8-sig').read()
     m = re.match(r'#+ (F-(\d+)) (.+)', body)
     if not m:
         sys.exit(f'{path}: first line must be "# F-<n> <title>"')
     f = dict(id=m.group(1), n=int(m.group(2)), title=m.group(3).strip(), path=path)
-    f.update((k, v.strip()) for k, v in re.findall(r'^([a-z-]+): (.*)$', body, re.M))
+    for k, v in re.findall(r'^([a-z-]+): (.*)$', body, re.M):
+        f.setdefault(k, v.strip())   # the field block comes first; a `key: value` line in the notes cannot override it
     if f.get('status') not in STATUSES or f.get('category') not in CATEGORIES:
         sys.exit(f"{path}: status {f.get('status')!r} or category {f.get('category')!r} not in the ledger's lists")
     if f'{f["id"]}.md' != os.path.basename(path):
@@ -45,7 +46,7 @@ def split(ledger):
     if os.path.isdir(d) or not os.path.exists(src):
         return
     os.makedirs(d)
-    for blk in re.split(r'^(?=## F-\d+ )', open(src, encoding='utf-8').read(), flags=re.M)[1:]:
+    for blk in re.split(r'^(?=## F-\d+ )', open(src, encoding='utf-8-sig').read(), flags=re.M)[1:]:
         n = re.match(r'## (F-\d+)', blk).group(1)
         with open(os.path.join(d, n + '.md'), 'w', encoding='utf-8', newline='\n') as w:
             w.write(blk[1:].rstrip() + '\n')   # '## F-n' -> '# F-n'
@@ -90,7 +91,7 @@ def new(args):
 def import_(args):
     split(args.other)
     for f in load(args.other):
-        body = open(f['path'], encoding='utf-8').read().rstrip('\n')
+        body = open(f['path'], encoding='utf-8-sig').read().rstrip('\n')
         body = re.sub(r'^#+ F-\d+', '# {id}', body, count=1) + f"\nimported-from: {f['id']} in {args.other}\n"
         print(f"{f['id']} -> {claim(args.ledger, body)}: {f['title']}")
     rows = read_ledger(args.ledger)
@@ -118,13 +119,21 @@ def strings(o):
 
 
 def recheck(args):
-    live = [(f, re.compile(f['recheck-rg'])) for f in load(args.ledger) if f['status'] in LIVE and f.get('recheck-rg')]
+    live = []
+    for f in load(args.ledger):
+        if f['status'] in LIVE and f.get('recheck-rg'):
+            try:
+                live.append((f, re.compile(f['recheck-rg'])))
+            except re.error as e:
+                print(f"{f['id']}: recheck-rg does not compile ({e}); recheck it by hand")
     hits = {f['id']: [] for f, _ in live}
     for row in open(os.path.join(args.dir, 'pending.tsv'), encoding='utf-8'):
-        sid, path, _, prev = (row.rstrip('\n').split('\t') + ['0'])[:4]
-        with open(path, 'rb') as fh:
-            fh.seek(int(prev))
-            lines = fh.read().decode('utf-8', errors='replace').splitlines()
+        sid, path, end, prev = (row.rstrip('\n').split('\t') + ['0'])[:4]
+        try:
+            _, lines = complete_lines(path, int(prev), int(end))   # exactly the span digest.py summarised
+        except OSError as e:
+            print(f'# {sid[:8]}: transcript unreadable from this side ({e.strerror}): {path}')
+            continue
         for line in lines:
             try:
                 j = json.loads(line)
@@ -159,6 +168,7 @@ def main(argv=None):
     sub.add_parser('recheck').add_argument('dir')
     sub.add_parser('import').add_argument('other')
     args = ap.parse_args(argv)
+    utf8_safe_stdout()
     {'index': index, 'new': new, 'recheck': recheck, 'import': import_}[args.cmd](args)
 
 

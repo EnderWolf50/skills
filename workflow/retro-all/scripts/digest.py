@@ -42,6 +42,12 @@ REVIEW_PREFIXES = ('Review this change for security vulnerabilities', 'You previ
 MAX_USER_MSGS, MAX_ERRS = 25, 6
 
 
+def utf8_safe_stdout():
+    """Replace what the console's code page cannot show (cp950 has no ⏎) instead of crashing on it."""
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(errors='replace')
+
+
 def text(c):
     if isinstance(c, str):
         return c
@@ -74,9 +80,13 @@ def git_root(path, wsl=''):
             return p
         if os.path.isfile(g):
             m = re.match(r'gitdir:\s*(.+)', open(g, errors='replace').read())
-            if m and '/worktrees/' in m.group(1).replace('\\', '/'):
-                return os.path.dirname(to_local(m.group(1).strip().replace('\\', '/').rsplit('/worktrees/', 1)[0], wsl))
-            return p
+            if not m:
+                return p
+            gd = m.group(1).strip()
+            # Absolute (either side's form) or relative to the worktree (worktree.useRelativePaths).
+            gd = to_local(gd.replace('\\', '/'), wsl) if re.match(r'^([\\/]|[A-Za-z]:)', gd) else os.path.normpath(os.path.join(p, gd))
+            gd = gd.replace('\\', '/')
+            return os.path.dirname(gd.rsplit('/worktrees/', 1)[0]) if '/worktrees/' in gd else p
         p = os.path.dirname(p)
     return None
 
@@ -84,6 +94,8 @@ def git_root(path, wsl=''):
 def bucket(cwd, wsl=''):
     """Repo name for a session's cwd, with worktrees folded into their repo."""
     parts = [x for x in re.split(r'[\\/]+', cwd or '') if x]
+    if len(parts) > 1 and parts[0] == 'mnt' and len(parts[1]) == 1:
+        parts = [parts[1] + ':'] + parts[2:]         # /mnt/c/... reads like C:\... from either side
     low = [x.lower() for x in parts]
     for i, x in enumerate(low):
         nxt = low[i + 1] if i + 1 < len(low) else ''
@@ -107,14 +119,23 @@ def bucket(cwd, wsl=''):
     return (rel[1] if len(rel) > 1 else rel[0]).lstrip('.')
 
 
+def complete_lines(path, start, end=None):
+    """(end offset of the last complete line, the lines) from byte start on, up to end when given.
+    A line still being written is left for the next run instead of being recorded as read."""
+    with open(path, 'rb') as f:
+        f.seek(start)
+        data = f.read() if end is None else f.read(max(0, end - start))
+    data = data[:data.rfind(b'\n') + 1]
+    return start + len(data), data.decode('utf-8', errors='replace').splitlines()
+
+
 def read_session(path, offset=0):
-    """Summary of the transcript from byte offset on (0 = the whole session), or None if it holds no user message."""
+    """(end offset, summary of the transcript's complete lines from byte offset on); the summary is None when they
+    hold no user message."""
     users, errs, skills, tools = [], [], [], collections.Counter()
     ts = cwd = None
     turns = denied = 0
-    with open(path, 'rb') as f:
-        f.seek(offset)
-        lines = f.read().decode('utf-8', errors='replace').splitlines()
+    end, lines = complete_lines(path, offset)
     for line in lines:
         try:
             j = json.loads(line)
@@ -138,7 +159,7 @@ def read_session(path, offset=0):
             if not t or t.startswith(('<local-command', 'Caveat:', '<task-notification')) or '<system-reminder>' in t[:30]:
                 continue
             if not users and not offset and t.startswith(REVIEW_PREFIXES):
-                return None
+                return end, None
             t = re.sub(r'<command-message>.*?</command-message>', '', t, flags=re.S)
             users.append(t[:600].replace('\n', ' ⏎ '))
         elif j.get('type') == 'assistant':
@@ -149,8 +170,8 @@ def read_session(path, offset=0):
                     if b.get('name') == 'Skill':
                         skills.append((b.get('input') or {}).get('skill'))
     if not users:
-        return None
-    return dict(ts=ts or '', cwd=cwd or '', offset=offset, users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
+        return end, None
+    return end, dict(ts=ts or '', cwd=cwd or '', offset=offset, users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
 
 
 def render(sid, path, s):
@@ -169,7 +190,7 @@ def read_ledger(ledger):
     rows = {}
     p = os.path.join(ledger, 'sessions.tsv')
     if os.path.exists(p):
-        for line in open(p, encoding='utf-8'):
+        for line in open(p, encoding='utf-8-sig'):
             f = line.rstrip('\n').split('\t')
             if len(f) >= 3 and f[2].isdigit():
                 rows[f[0]] = f
@@ -192,34 +213,40 @@ def find_sessions(roots):
 def digest(args):
     seen = {} if args.all else read_ledger(args.ledger)
     os.makedirs(args.out, exist_ok=True)
-    buckets, pending = collections.defaultdict(list), []
+    buckets, pending, names = collections.defaultdict(list), [], {}
     for sid, path in find_sessions(args.roots or [r for r in roots() if os.path.isdir(r)]).items():
         if args.session and not sid.startswith(args.session):
             continue
-        size, prev = os.path.getsize(path), int(seen[sid][2]) if sid in seen else 0
-        if size <= prev:
+        prev = int(seen[sid][2]) if sid in seen else 0
+        if os.path.getsize(path) <= prev:
             continue
-        pending.append(f'{sid}\t{path}\t{size}\t{prev}\n')
-        s = read_session(path, prev)
+        end, s = read_session(path, prev)
+        if end <= prev:
+            continue
+        pending.append(f'{sid}\t{path}\t{end}\t{prev}\n')
         if s:
-            buckets[bucket(s['cwd'], wsl_prefix(path))].append((s['ts'], render(sid, path, s)))
+            b = bucket(s['cwd'], wsl_prefix(path))
+            # Bucket names become file names, which Windows compares without case.
+            buckets[names.setdefault(b.lower(), b)].append((s['ts'], render(sid, path, s)))
     with open(os.path.join(args.out, 'pending.tsv'), 'w', encoding='utf-8', newline='\n') as w:
         w.writelines(pending)
     summary = []
     for b, blocks in buckets.items():
         blocks.sort()
+        nbytes = lambda s: len(s.encode('utf-8'))
         parts, cur = [], ''
         for _, blk in blocks:
-            if cur and len(cur) + len(blk) > args.max_kb * 1024:
+            if cur and nbytes(cur) + nbytes(blk) > args.max_kb * 1024:
                 parts.append(cur)
                 cur = ''
             cur += blk
         parts.append(cur)
-        names = [f'{b}.md'] if len(parts) == 1 else [f'{b}-{i}.md' for i in range(1, len(parts) + 1)]
-        for n, body in zip(names, parts):
-            with open(os.path.join(args.out, n), 'w', encoding='utf-8') as w:
+        files = [f'{b}.md'] if len(parts) == 1 else [f'{b}-{i}.md' for i in range(1, len(parts) + 1)]
+        for n, body in zip(files, parts):
+            with open(os.path.join(args.out, n), 'w', encoding='utf-8', newline='\n') as w:
                 w.write(body)
-        summary.append((sum(map(len, parts)), f"{b}\tsessions={len(blocks)}\tkb={sum(map(len, parts)) // 1024}\tfiles={','.join(names)}"))
+        size = sum(map(nbytes, parts))
+        summary.append((size, f"{b}\tsessions={len(blocks)}\tkb={size // 1024}\tfiles={','.join(files)}"))
     print(f'# {len(pending)} new or grown sessions; digests in {args.out}')
     for _, line in sorted(summary, reverse=True):
         print(line)
@@ -249,6 +276,7 @@ def main(argv=None):
     ap.add_argument('--roots', nargs='+', help='transcript roots (default: both sides of this machine)')
     ap.add_argument('--max-kb', type=int, default=150, help='split a bucket into parts above this size')
     args = ap.parse_args(argv)
+    utf8_safe_stdout()
     mark(args) if args.mark else digest(args)
 
 

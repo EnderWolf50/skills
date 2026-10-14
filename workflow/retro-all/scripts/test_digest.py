@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Self-test for digest.py on synthetic transcripts: python3 test_digest.py"""
-import contextlib, io, json, os, sys, tempfile
+import contextlib, io, json, os, re, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import digest, ledger as ledger_py
@@ -94,4 +94,61 @@ if os.name == 'nt':
     assert digest.to_local('/home/k/dev', unc) == unc + '\\home\\k\\dev' and digest.to_local('/mnt/d/Dev/x') == 'D:\\Dev\\x'
 else:
     assert digest.to_local('D:\\Dev\\x') == '/mnt/d/Dev/x' and digest.to_local('/home/k/dev', unc) == '/home/k/dev'
+
+# A WSL /mnt/<drive> cwd buckets like the same folder seen from Windows.
+assert digest.bucket('/mnt/c/Users/k/learning/pstack/practice') == 'pstack' == digest.bucket('C:\\Users\\k\\learning\\pstack\\practice')
+assert digest.bucket('/mnt/d/Dev/x') == digest.bucket('D:\\Dev\\x') == 'x'
+
+
+def user(cwd, msg):
+    return json.dumps({'type': 'user', 'cwd': cwd, 'timestamp': '2026-10-01T00:00:00Z', 'message': {'content': msg}}) + '\n'
+
+
+with tempfile.TemporaryDirectory() as t:
+    root, ledger, out = (os.path.join(t, x) for x in ('root', 'ledger', 'out'))
+    os.makedirs(f'{root}/p')
+
+    # A line still being written when digest runs is read on the next run, not skipped.
+    tr = f'{root}/p/hhhh8888.jsonl'
+    whole = user('Q:\\NoRepo\\Proj\\x', 'first') + user('Q:\\NoRepo\\Proj\\x', 'SECOND')
+    open(tr, 'w', newline='\n').write(whole[:-20])
+    run('--roots', root, '--ledger', ledger, '--out', out)
+    run('--mark', out, '--ledger', ledger)
+    open(tr, 'w', newline='\n').write(whole + user('Q:\\NoRepo\\Proj\\x', 'third'))
+    run('--roots', root, '--ledger', ledger, '--out', out)
+    body = open(f'{out}/Proj.md', encoding='utf-8').read()
+    assert 'SECOND' in body and 'third' in body and 'first' not in body, body
+
+    # Buckets differing only in case share one digest file instead of overwriting each other.
+    open(f'{root}/p/iiii9999.jsonl', 'w').write(user('q:\\norepo\\proj\\y', 'lower'))
+    res = run('--all', '--roots', root, '--ledger', ledger, '--out', out)
+    assert 'sessions=2' in res and res.count('files=') == 1, res
+
+    # kb= counts bytes: 25 messages of 600 CJK characters are about 44 KB, not 14.
+    open(f'{root}/p/jjjj0000.jsonl', 'w', encoding='utf-8').write(''.join(user('Q:\\Big\\cjk\\z', '字' * 600) for _ in range(25)))
+    res = run('--all', '--roots', root, '--ledger', ledger, '--out', out, '--session', 'jjjj')
+    kb = int(re.search(r'kb=(\d+)', res).group(1))
+    assert kb == os.path.getsize(f'{out}/cjk.md') // 1024 and kb > 40, res
+
+    # recheck survives a regex that does not compile and a transcript that is gone; a BOM and a
+    # `status:` line in the notes do not break or override a finding.
+    os.makedirs(f'{ledger}/findings')
+    with open(f'{ledger}/findings/F-1.md', 'w', encoding='utf-8-sig') as w:
+        w.write('# F-1 Bad regex\nstatus: open\ncategory: skill\nrecheck-rg: until (sleep\n\nNotes.\nstatus: wontfix\n')
+    with open(f'{out}/pending.tsv', 'a') as w:
+        w.write(f'kkkk1111\t{root}/p/gone.jsonl\t99\t0\n')
+    res = run('--ledger', ledger, 'recheck', out, mod=ledger_py)
+    assert 'F-1: recheck-rg does not compile' in res and 'kkkk1111: transcript unreadable' in res, res
+    run('--ledger', ledger, 'index', mod=ledger_py)
+    assert '| open | skill | Bad regex |' in open(f'{ledger}/findings.md').read()
+
+    # A worktree whose .git file holds a relative gitdir resolves to its main checkout.
+    os.makedirs(f'{t}/myrepo/.git/worktrees/feat')
+    os.makedirs(f'{t}/myrepo/.worktrees/feat')
+    open(f'{t}/myrepo/.worktrees/feat/.git', 'w').write('gitdir: ../../.git/worktrees/feat\n')
+    assert os.path.basename(digest.git_root(f'{t}/myrepo/.worktrees/feat')) == 'myrepo'
+
+help_out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user-msgs.py'), '--help'],
+                          capture_output=True, text=True)
+assert help_out.returncode == 0 and 'session-id-prefix' in help_out.stdout, help_out
 print('ok')
