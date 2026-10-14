@@ -2,7 +2,7 @@
 """Print a session's own user messages: user-msgs.py <session-id-prefix> [max-chars, default 300]"""
 import glob, json, os, sys
 
-ROOTS = [os.path.expanduser('~/.claude/projects'), '/mnt/c/Users/kerati/.claude/projects']
+from digest import ROOTS
 
 
 def text(c):

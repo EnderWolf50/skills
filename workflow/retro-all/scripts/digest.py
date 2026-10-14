@@ -1,16 +1,35 @@
 #!/usr/bin/env python3
 """Digest every Claude Code session on this machine into one markdown file per repo bucket.
 
-  digest.py [--all] [--out DIR]   write DIR/<bucket>.md + DIR/pending.tsv, print one summary line per bucket
-  digest.py --mark DIR            record DIR/pending.tsv in the ledger's sessions.tsv as reviewed
+  digest.py [--all] [--session ID8] [--out DIR]   write DIR/<bucket>.md + DIR/pending.tsv, print one summary line per bucket
+  digest.py --mark DIR                            record DIR/pending.tsv in the ledger's sessions.tsv as reviewed
 
-Sessions already in the ledger are skipped unless their transcript grew; --all ignores the ledger.
+Sessions already in the ledger are skipped unless their transcript grew, and a grown one is digested
+from where the last review stopped; --all ignores the ledger.
 """
-import argparse, collections, datetime, glob, json, os, re, sys
+import argparse, collections, datetime, glob, json, os, re, subprocess, sys
 
 HOME = os.path.expanduser('~')
-ROOTS = [os.path.join(HOME, '.claude/projects'), '/mnt/c/Users/kerati/.claude/projects']
-LEDGER = os.path.join(HOME, '.claude/retro')
+
+
+def wsl_distros():
+    try:
+        out = subprocess.run(['wsl.exe', '-l', '-q'], capture_output=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        return []
+    return out.decode('utf-16-le', errors='replace').replace('\0', '').split()
+
+
+# Both sides of a Windows + WSL machine, whichever side runs this: Windows reads WSL through \\wsl.localhost,
+# WSL reads Windows through /mnt/c.
+if os.name == 'nt':
+    OTHER = [os.path.dirname(p) for d in wsl_distros() for p in glob.glob(rf'\\wsl.localhost\{d}\home\*\.claude\projects')]
+else:
+    OTHER = [os.path.dirname(p) for p in glob.glob('/mnt/c/Users/*/.claude/projects')]
+ROOTS = [os.path.join(HOME, '.claude', 'projects')] + [os.path.join(c, 'projects') for c in OTHER]
+# One ledger per machine, on the Windows side when there is one, so both sides read and write the same file.
+# ponytail: the first Windows user with a ~/.claude wins; pass --ledger on a machine shared by several.
+LEDGER = os.path.join(OTHER[0] if OTHER and os.name != 'nt' else os.path.join(HOME, '.claude'), 'retro')
 # First user message of the security-guidance plugin's review sub-sessions (both its passes).
 REVIEW_PREFIXES = ('Review this change for security vulnerabilities', 'You previously flagged these candidate vulnerabilities')
 MAX_USER_MSGS, MAX_ERRS = 25, 6
@@ -22,14 +41,26 @@ def text(c):
     return '\n'.join(b.get('text', '') for b in c or [] if isinstance(b, dict) and b.get('type') == 'text')
 
 
-def to_local(path):
+def to_local(path, wsl=''):
+    """path as this side sees it; wsl is the \\\\wsl.localhost\\<distro> a WSL session's paths live under."""
+    if os.name == 'nt':
+        m = re.match(r'^/mnt/([a-z])/(.*)$', path)
+        if m:
+            return f'{m.group(1).upper()}:\\' + m.group(2).replace('/', '\\')
+        return wsl + path.replace('/', '\\') if wsl and path.startswith('/') else path
     m = re.match(r'^([A-Za-z]):[\\/]*(.*)$', path)
     return f'/mnt/{m.group(1).lower()}/' + m.group(2).replace('\\', '/') if m else path
 
 
-def git_root(path):
+def wsl_prefix(transcript):
+    """The \\\\wsl.localhost\\<distro> a transcript read from Windows lives under, or ''."""
+    m = re.match(r'^(\\\\wsl\.localhost\\[^\\]+)', transcript)
+    return m.group(1) if m else ''
+
+
+def git_root(path, wsl=''):
     """Main checkout of the repo holding path (a linked worktree resolves to its main checkout), or None."""
-    p = to_local(path)
+    p = to_local(path, wsl)
     while p and p not in ('/', HOME) and os.path.basename(p) != '':
         g = os.path.join(p, '.git')
         if os.path.isdir(g):
@@ -37,13 +68,13 @@ def git_root(path):
         if os.path.isfile(g):
             m = re.match(r'gitdir:\s*(.+)', open(g, errors='replace').read())
             if m and '/worktrees/' in m.group(1).replace('\\', '/'):
-                return os.path.dirname(to_local(m.group(1).strip().replace('\\', '/').rsplit('/worktrees/', 1)[0]))
+                return os.path.dirname(to_local(m.group(1).strip().replace('\\', '/').rsplit('/worktrees/', 1)[0], wsl))
             return p
         p = os.path.dirname(p)
     return None
 
 
-def bucket(cwd):
+def bucket(cwd, wsl=''):
     """Repo name for a session's cwd, with worktrees folded into their repo."""
     parts = [x for x in re.split(r'[\\/]+', cwd or '') if x]
     low = [x.lower() for x in parts]
@@ -59,7 +90,7 @@ def bucket(cwd):
             return parts[i + 1]                      # .wt/<repo>
         if len(x) > 3 and x.endswith(('.wt', '-wt')):
             return parts[i][:-3]                     # <repo>.wt/<name>, <repo>-wt/<name>
-    root = git_root(cwd or '')
+    root = git_root(cwd or '', wsl)
     if root:
         return os.path.basename(root)
     # Not a git checkout: the second level below home or the drive root (learning/pstack/practice/x -> pstack).
@@ -69,11 +100,15 @@ def bucket(cwd):
     return (rel[1] if len(rel) > 1 else rel[0]).lstrip('.')
 
 
-def read_session(path):
+def read_session(path, offset=0):
+    """Summary of the transcript from byte offset on (0 = the whole session), or None if it holds no user message."""
     users, errs, skills, tools = [], [], [], collections.Counter()
     ts = cwd = None
     turns = denied = 0
-    for line in open(path, encoding='utf-8', errors='replace'):
+    with open(path, 'rb') as f:
+        f.seek(offset)
+        lines = f.read().decode('utf-8', errors='replace').splitlines()
+    for line in lines:
         try:
             j = json.loads(line)
         except ValueError:
@@ -95,7 +130,7 @@ def read_session(path):
             t = text(c).strip()
             if not t or t.startswith(('<local-command', 'Caveat:', '<task-notification')) or '<system-reminder>' in t[:30]:
                 continue
-            if not users and t.startswith(REVIEW_PREFIXES):
+            if not users and not offset and t.startswith(REVIEW_PREFIXES):
                 return None
             t = re.sub(r'<command-message>.*?</command-message>', '', t, flags=re.S)
             users.append(t[:600].replace('\n', ' ⏎ '))
@@ -108,11 +143,12 @@ def read_session(path):
                         skills.append((b.get('input') or {}).get('skill'))
     if not users:
         return None
-    return dict(ts=ts or '', cwd=cwd or '', users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
+    return dict(ts=ts or '', cwd=cwd or '', offset=offset, users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
 
 
 def render(sid, path, s):
-    out = [f"\n## {s['ts'][:16]} {os.path.basename(os.path.dirname(path))} {sid[:8]}\n",
+    cont = f" (continued from byte {s['offset']})" if s['offset'] else ''
+    out = [f"\n## {s['ts'][:16]} {os.path.basename(os.path.dirname(path))} {sid[:8]}{cont}\n",
            f"cwd={s['cwd']} turns={s['turns']} tools={dict(s['tools'].most_common(8))} skills={s['skills']} "
            f"errors={len(s['errs'])} denied={s['denied']}\n"]
     out += [f'- U: {u}\n' for u in s['users'][:MAX_USER_MSGS]]
@@ -151,13 +187,15 @@ def digest(args):
     os.makedirs(args.out, exist_ok=True)
     buckets, pending = collections.defaultdict(list), []
     for sid, path in find_sessions(args.roots).items():
-        size = os.path.getsize(path)
-        if sid in seen and size <= int(seen[sid][2]):
+        if args.session and not sid.startswith(args.session):
             continue
-        pending.append(f'{sid}\t{path}\t{size}\n')
-        s = read_session(path)
+        size, prev = os.path.getsize(path), int(seen[sid][2]) if sid in seen else 0
+        if size <= prev:
+            continue
+        pending.append(f'{sid}\t{path}\t{size}\t{prev}\n')
+        s = read_session(path, prev)
         if s:
-            buckets[bucket(s['cwd'])].append((s['ts'], render(sid, path, s)))
+            buckets[bucket(s['cwd'], wsl_prefix(path))].append((s['ts'], render(sid, path, s)))
     with open(os.path.join(args.out, 'pending.tsv'), 'w', encoding='utf-8') as w:
         w.writelines(pending)
     summary = []
@@ -184,7 +222,7 @@ def mark(args):
     rows = read_ledger(args.ledger)
     now = datetime.datetime.now().isoformat(timespec='seconds')
     for line in open(os.path.join(args.mark, 'pending.tsv'), encoding='utf-8'):
-        sid, path, size = line.rstrip('\n').split('\t')
+        sid, path, size = line.rstrip('\n').split('\t')[:3]
         rows[sid] = [sid, path, size, now]
     os.makedirs(args.ledger, exist_ok=True)
     p = os.path.join(args.ledger, 'sessions.tsv')
@@ -198,6 +236,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--all', action='store_true', help='ignore the ledger and digest every session')
     ap.add_argument('--out', default=os.path.join(LEDGER, 'digests', datetime.date.today().isoformat()))
+    ap.add_argument('--session', metavar='ID8', help='digest only the session whose id starts with ID8')
     ap.add_argument('--mark', metavar='DIR', help="record DIR/pending.tsv as reviewed")
     ap.add_argument('--ledger', default=LEDGER)
     ap.add_argument('--roots', nargs='+', default=[r for r in ROOTS if os.path.isdir(r)])

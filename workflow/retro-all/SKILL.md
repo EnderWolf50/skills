@@ -4,29 +4,35 @@ description: Cross-project retrospective over every Claude Code session on this 
 disable-model-invocation: true
 ---
 
-A **retro-all** suggests changes to the agent's environment (skills, patches, steering files, checks, tooling) from every session since the last run, across all projects. It is done when every bucket is analysed, every `open`/`watch`/`fixed` finding is re-checked for recurrence, and the ledger records the user's decisions. Call the Skill tool with `writing-for-agents` before proposing any skill or steering text.
+A **retro-all** suggests changes to the agent's environment (skills, patches, steering files, checks, tooling) from every session since the last run, across all projects. It is done when every bucket is analysed, every live finding is re-checked for recurrence, and the ledger records the user's decisions. Call the Skill tool with `writing-for-agents` before proposing any skill or steering text.
+
+Scripts live in `~/.agents/skills/retro-all/scripts/`; run them with `python3` (`python` on Windows), each takes `--help`.
 
 ## Ledger
 
-`~/.claude/retro/` holds the state between runs (machine-local):
+One ledger per machine holds the state between runs: `~/.claude/retro/`, on the Windows side of a Windows + WSL machine (`/mnt/c/Users/<user>/.claude/retro/` from WSL), so a run from either side reads and writes the same files. `ledger.py index` prints its path. A second ledger left on the WSL side by an older version is merged in once with `ledger.py import <its path>`.
 
-- `sessions.tsv`: `session_id<TAB>transcript_path<TAB>size_bytes<TAB>reviewed_at`. A listed session is skipped next run unless its transcript grew.
-- `findings.md`: one block per finding, numbered on from the highest `F-<n>`:
+- `sessions.tsv`: `session_id<TAB>transcript_path<TAB>size_bytes<TAB>reviewed_at`, written only by `digest.py --mark`. A listed session is skipped next run unless its transcript grew, and a grown one is digested from the recorded size on.
+- `findings/F-<n>.md`: one file per finding. A finding is never deleted: a dropped one becomes `wontfix`, a duplicate becomes `wontfix` with `fix: duplicate of F-<m>`.
 
   ```
-  ## F-<n> <title>
+  # F-<n> <title>
   status: open | in-progress | fixed | wontfix | watch
   category: skill | patch | correction | guardrail | navigation | tool-economy | information-access
-  evidence: <session-id8> <date>, ...
-  fix: <PR/commit link or file>
+  evidence: <session-id8> <date> (<what happened>), ...
+  fix: <PR/MR link, or repo + branch + commit while unpublished>
   recheck: <the pattern in a new session that means it recurred>
+  recheck-rg: <optional Python regex over the agent's tool-call inputs (commands, scripts, edited paths) that flags that pattern>
   ```
+
+  Free notes may follow the fields.
+- `findings.md`: the index, generated. `ledger.py index` rewrites it from `findings/` and prints the next free id.
 
 ## Steps
 
-1. **Digest.** `python3 ~/.agents/skills/retro-all/scripts/digest.py` (`--all` ignores the ledger; `--help` for the rest). It scans `~/.claude/projects` and the Windows-side `/mnt/c/Users/kerati/.claude/projects`, folds worktrees into their repo, drops title-generator and security-review sub-sessions, and prints one line per bucket: `<bucket> sessions=<n> kb=<size> files=<digest files>`. Done: the output directory and the bucket lines are known.
-2. **Read the ledger.** Read `findings.md` in full (absent on the first run). Done: every finding's status and `recheck` is in mind.
-3. **Analyse.** Dispatch one background subagent per bucket of 20 KB or more, plus one for all smaller buckets together, each with [`references/brief.md`](references/brief.md) as its prompt and its digest paths filled in. Done: every bucket file is covered by a returned report.
-4. **Re-check.** For every `open`, `watch` and `fixed` finding, search the new digests for its `recheck` pattern (`rg` over the output directory, then `scripts/user-msgs.py <session-id8>` to confirm). A recurrence of a `fixed` finding means the fix failed: reopen it with the new evidence. Done: each such finding is marked recurred (with session ids) or clean.
+1. **Digest.** `digest.py` (`--all` ignores the ledger). It scans the sessions of both sides of a Windows + WSL machine from either side (`\\wsl.localhost\<distro>` from Windows; `/mnt/c` from WSL), folds worktrees into their repo, drops title-generator and security-review sub-sessions, and prints one line per bucket: `<bucket> sessions=<n> kb=<size> files=<digest files>`. Done: the output directory and the bucket lines are known.
+2. **Read the ledger.** `ledger.py index`, then read `findings.md` and the `findings/F-<n>.md` of every `open`, `in-progress`, `watch` and `fixed` finding. Done: every live finding's status and `recheck` is in mind.
+3. **Analyse.** Dispatch one background subagent per bucket of 20 KB or more, plus one for all smaller buckets together, each with [`references/brief.md`](references/brief.md) as its prompt and its digest paths and the ledger path filled in. Done: every bucket file is covered by a returned report.
+4. **Re-check.** `ledger.py recheck <output dir>` lists each live finding whose `recheck-rg` matched a new session; confirm each hit with `user-msgs.py <session-id8>` or the transcript. A live finding without `recheck-rg` is re-checked by hand against the digests, and gets a `recheck-rg` when its pattern is mechanical. A recurrence of a `fixed` finding means the fix failed: reopen it with the new evidence. Then, for every `in-progress` finding, check whether its fix landed (`gh pr view <url> --json state`, `glab mr view <url>`, or `git branch -r --contains <sha>`); landed means `fixed`. Done: each live finding is marked recurred (with session ids) or clean, and each `in-progress` one landed or still pending.
 5. **Present** the merged candidates to the user, ranked by severity: skill and patch candidates first, then recurrences, then the rest. Each candidate carries its evidence, its proposed change, and `new` or `F-<n>`. Done: the user has decided each candidate (do, watch, wontfix).
-6. **Record.** Append each new finding to `findings.md` and update the statuses the user decided; then `python3 ~/.agents/skills/retro-all/scripts/digest.py --mark <output dir>` records the digested sessions in `sessions.tsv`. Done: `findings.md` holds every candidate presented and the mark command reports the session count.
+6. **Record.** Create each new finding with `ledger.py new <category> "<title>"` (it claims the id, so a concurrent retro cannot take the same one) and fill in the file it prints; edit the files of the findings whose status or evidence changed, run `ledger.py index`, then `digest.py --mark <output dir>`. Done: every candidate presented has a file, the index lists it, and the mark command reports the session count.
