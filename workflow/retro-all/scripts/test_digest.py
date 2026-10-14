@@ -64,6 +64,16 @@ with tempfile.TemporaryDirectory() as t:
     res = run('--ledger', ledger, 'recheck', out, mod=ledger_py)
     assert 'F-1 (fixed) aaaa1111' in res and 'F-3' not in res.split('#')[0], 'only live findings are rechecked'
     assert 'pgrep' in res and 'it grew' not in res, 'recheck matches tool calls, not the user quoting the pattern'
+    assert 'aaaa1111 [no fixed-at' in res, 'a fixed finding without fixed-at asks for the session start to be checked'
+    # A session started (2026-10-01) before the fix took effect is not a recurrence; one started after is.
+    f1 = open(f'{ledger}/findings/F-1.md').read()
+    open(f'{ledger}/findings/F-1.md', 'w').write(f1 + 'fixed-at: 2026-10-01T08:00+08:00\n')   # 00:00Z, not before
+    res = run('--ledger', ledger, 'recheck', out, mod=ledger_py)
+    assert 'F-1 (fixed) aaaa1111' in res and 'not counted' not in res, res
+    open(f'{ledger}/findings/F-1.md', 'w').write(f1 + 'fixed-at: 2026-10-02T00:00Z\n')
+    res = run('--ledger', ledger, 'recheck', out, mod=ledger_py)
+    assert 'F-1 (fixed) aaaa1111' not in res and '# F-1: 1 hits in sessions started before fixed-at' in res, res
+    open(f'{ledger}/findings/F-1.md', 'w').write(f1)
     open(f'{ledger}/findings/F-5.md', 'w').write('# F-5 Taken\nstatus: open\ncategory: skill\n')
     assert run('--ledger', ledger, 'new', 'navigation', 'Lost file', mod=ledger_py).rstrip().endswith('F-6.md')
     assert open(f'{ledger}/findings/F-6.md').read().startswith('# F-6 Lost file\nstatus: open\ncategory: navigation\n')

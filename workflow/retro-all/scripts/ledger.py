@@ -8,7 +8,7 @@
 
 The first command on a ledger whose findings.md still holds the finding blocks splits it into findings/.
 """
-import argparse, json, os, re, sys
+import argparse, datetime, json, os, re, sys
 
 from digest import LEDGER, complete_lines, read_ledger, to_local, utf8_safe_stdout
 
@@ -122,21 +122,47 @@ def strings(o):
             yield from strings(v)
 
 
+def utc(ts):
+    """An ISO timestamp ('...Z', '+08:00', or naive = UTC) as an aware datetime; None when it does not parse."""
+    try:
+        d = datetime.datetime.fromisoformat(ts.strip().replace('Z', '+00:00'))
+    except (AttributeError, ValueError):
+        return None
+    return d if d.tzinfo else d.replace(tzinfo=datetime.timezone.utc)
+
+
+def session_start(path):
+    """The first timestamp in a transcript: when the session started and loaded its steering files."""
+    with open(path, encoding='utf-8', errors='replace') as fh:
+        for line in fh:
+            try:
+                j = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(j, dict) and utc(j.get('timestamp') or ''):
+                return utc(j['timestamp'])
+    return None
+
+
 def recheck(args):
     live = []
     for f in load(args.ledger):
         if f['status'] in LIVE and f.get('recheck-rg'):
+            if f.get('fixed-at') and not utc(f['fixed-at']):
+                print(f"{f['id']}: fixed-at {f['fixed-at']!r} is not an ISO time; its hits are all counted")
             try:
                 live.append((f, re.compile(f['recheck-rg'])))
             except re.error as e:
                 print(f"{f['id']}: recheck-rg does not compile ({e}); recheck it by hand")
     hits = {f['id']: [] for f, _ in live}
+    early = {f['id']: set() for f, _ in live}   # hits in sessions that started before the fix took effect
     for row in open(os.path.join(args.dir, 'pending.tsv'), encoding='utf-8'):
         sid, path, end, prev = (row.rstrip('\n').split('\t') + ['0'])[:4]
         if not os.path.exists(path):
             path = to_local(path)   # digested on the Windows side, rechecked from WSL
         try:
             _, lines = complete_lines(path, int(prev), int(end))   # exactly the span digest.py summarised
+            start = session_start(path)
         except OSError as e:
             print(f'# {sid[:8]}: transcript unreadable from this side ({e.strerror}): {path}')
             continue
@@ -154,11 +180,22 @@ def recheck(args):
             for s in strings(calls):
                 for f, rx in live:
                     m = rx.search(s)
-                    if m and sid[:8] not in (h[0] for h in hits[f['id']]):
-                        hits[f['id']].append((sid[:8], s[max(0, m.start() - 60):m.end() + 60].replace('\n', ' ')))
+                    if not m or sid[:8] in (h[0] for h in hits[f['id']]):
+                        continue
+                    # A session keeps the steering it loaded at start: one opened before the fix took effect
+                    # repeating the mistake is not a failed fix.
+                    fixed_at = utc(f.get('fixed-at') or '') if f['status'] == 'fixed' else None
+                    if fixed_at and start and start < fixed_at:
+                        early[f['id']].add(sid[:8])
+                        continue
+                    hits[f['id']].append((sid[:8], s[max(0, m.start() - 60):m.end() + 60].replace('\n', ' ')))
     for f, _ in live:
         for sid, snip in hits[f['id']]:
-            print(f"{f['id']} ({f['status']}) {sid}: {snip}")
+            note = ' [no fixed-at: confirm the session started after the fix took effect]' \
+                if f['status'] == 'fixed' and not f.get('fixed-at') else ''
+            print(f"{f['id']} ({f['status']}) {sid}{note}: {snip}")
+        if early[f['id']]:
+            print(f"# {f['id']}: {len(early[f['id']])} hits in sessions started before fixed-at, not counted")
     print(f'# {sum(map(len, hits.values()))} hits over {len(live)} findings with recheck-rg; '
           f"{sum(1 for f in load(args.ledger) if f['status'] in LIVE and not f.get('recheck-rg'))} live findings need a manual recheck")
 
