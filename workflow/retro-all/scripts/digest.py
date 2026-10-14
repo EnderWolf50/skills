@@ -14,9 +14,12 @@ HOME = os.path.expanduser('~')
 
 def wsl_distros():
     try:
-        out = subprocess.run(['wsl.exe', '-l', '-q'], capture_output=True, timeout=10).stdout
+        r = subprocess.run(['wsl.exe', '-l', '-q'], capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return []
+    if r.returncode:
+        return []   # no distros: the output is an error sentence, not names
+    out = r.stdout
     # wsl.exe prints UTF-16 unless WSL_UTF8=1 is set.
     return out.decode('utf-16-le' if b'\0' in out else 'utf-8', errors='replace').replace('\0', '').split()
 
@@ -58,9 +61,9 @@ def text(c):
 def to_local(path, wsl=''):
     """path as this side sees it; wsl is the \\\\wsl.localhost\\<distro> a WSL session's paths live under."""
     if os.name == 'nt':
-        m = re.match(r'^/mnt/([a-z])/(.*)$', path)
+        m = re.match(r'^/mnt/([a-z])(?:/(.*))?$', path)   # /mnt/d alone is the drive root
         if m:
-            return f'{m.group(1).upper()}:\\' + m.group(2).replace('/', '\\')
+            return f'{m.group(1).upper()}:\\' + (m.group(2) or '').replace('/', '\\')
         return wsl + path.replace('/', '\\') if wsl and path.startswith('/') else path
     m = re.match(r'^([A-Za-z]):[\\/]*(.*)$', path)
     return f'/mnt/{m.group(1).lower()}/' + m.group(2).replace('\\', '/') if m else path
@@ -99,7 +102,9 @@ def git_root(path, wsl=''):
 @functools.lru_cache(maxsize=None)
 def knows_branch(repo, branch):
     """repo has branch, or a merge commit naming it (GitLab "Merge branch '<b>'", GitHub "from <owner>/<b>")."""
-    git = ['git', '-C', repo]
+    # A repo inside WSL read from Windows belongs to the distro's user: git refuses it as dubious ownership
+    # unless told otherwise. Only read-only commands run here.
+    git = ['git'] + (['-c', 'safe.directory=*'] if repo.startswith('\\\\wsl') else []) + ['-C', repo]
     try:
         for ref in (f'refs/heads/{branch}', f'refs/remotes/origin/{branch}'):
             if subprocess.run(git + ['rev-parse', '--verify', '--quiet', ref], capture_output=True, timeout=10).returncode == 0:
@@ -123,6 +128,7 @@ def removed_worktree_repo(cwd, name, branch, wsl):
     except OSError:
         return None
     hits = [r for r in repos if name.lower() == r.lower() or name.lower().startswith(r.lower() + '-')]
+    hits = [max(hits, key=len)] if hits else []   # foo-bar-x belongs to foo-bar, not foo
     if not hits and branch and branch != 'HEAD':
         hits = [r for r in repos if knows_branch(os.path.join(parent, r), branch)]
     return hits[0] if len(hits) == 1 else None

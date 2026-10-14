@@ -92,6 +92,7 @@ unc = '\\\\wsl.localhost\\Ubuntu'
 assert digest.wsl_prefix(unc + '\\home\\k\\.claude\\projects\\-home-k\\a.jsonl') == unc
 if os.name == 'nt':
     assert digest.to_local('/home/k/dev', unc) == unc + '\\home\\k\\dev' and digest.to_local('/mnt/d/Dev/x') == 'D:\\Dev\\x'
+    assert digest.to_local('/mnt/d', unc) == 'D:\\', 'a drive root from WSL is the Windows drive, not a path inside the distro'
 else:
     assert digest.to_local('D:\\Dev\\x') == '/mnt/d/Dev/x' and digest.to_local('/home/k/dev', unc) == '/home/k/dev'
 
@@ -173,6 +174,8 @@ with tempfile.TemporaryDirectory() as t:
     # A removed .wt/<name> worktree: the checkout beside .wt that <name> starts with, else the one whose
     # history names the session's branch.
     assert digest.removed_worktree_repo(f'{t}/.wt/myrepo-gone', 'myrepo-gone', '', '') == 'myrepo'
+    os.makedirs(f'{t}/myrepo-extra/.git')
+    assert digest.removed_worktree_repo(f'{t}/.wt/myrepo-extra-x', 'myrepo-extra-x', '', '') == 'myrepo-extra', 'longest name wins'
     if shutil.which('git'):
         git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t', '-C', f'{t}/CRM']
         os.makedirs(f'{t}/CRM')
