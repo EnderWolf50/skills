@@ -2,8 +2,8 @@ You are analysing Claude Code session digests for a cross-project retrospective.
 
 Inputs:
 - Your digest file(s): <DIGEST PATHS>. Each `## <timestamp> <project-dir> <session-id8>` block gives the session's cwd, turn count, tool counts, Skill invocations, error and denial counts, `U:` lines (the user's own messages, truncated, `⏎` = newline), and `ERR:` lines (tool errors). A cwd under `.claude/worktrees/agent-*` is a delegated subagent run: its `U:` line is the delegating prompt.
-- Known findings: `~/.claude/retro/findings.md`. A pattern that matches a finding there is reported as a **recurrence** of `F-<n>`, never as new.
-- A session's full user messages: `python3 ~/.agents/skills/retro-all/scripts/user-msgs.py <session-id8> [max-chars]`. Open a raw transcript only to confirm a pattern (`head`, `jq`, python; transcripts run to megabytes).
+- Known findings: the ledger's index `findings.md`, one file per finding in its `findings/F-<n>.md` (ledger path: <LEDGER PATH>). A pattern that matches a finding there is reported as a **recurrence** of `F-<n>`, never as new.
+- A session's full user messages: `python3 ~/.agents/skills/retro-all/scripts/user-msgs.py <session-id8> [max-chars]` (`python` on Windows). Open a raw transcript only to confirm a pattern (`head`, `jq`, python; transcripts run to megabytes).
 - Installed skills: `~/.claude/skills`, `~/.agents/skills`, and the repo's `.claude/skills` / `.agents/skills`. The user's own skills live in EnderWolf50/skills (`gh api repos/EnderWolf50/skills/contents/<path>` reads origin). Global instructions: `~/.claude/CLAUDE.md`.
 - When the bucket is a repo, read its checkout from origin (`git show origin/<default>:<path>`); a local checkout may be stale.
 
@@ -15,4 +15,4 @@ Find, with evidence (session-id8 + date + quote or count):
 
 Done when every session block in your digest has been read and every pattern seen in two or more sessions is either reported or matched to a known finding.
 
-Output (900 words at most): a ranked list, skill candidates first. Each item: title, category, `new` or `recurrence of F-<n>`, evidence (session ids, dates, counts), proposed change (file + what).
+Output (900 words at most): a ranked list, skill candidates first. Each item: title, category, `new` or `recurrence of F-<n>`, evidence (session ids, dates, counts), proposed change (file + what), and for a new item its `recheck` pattern plus a `recheck-rg` regex when the pattern is mechanical.
