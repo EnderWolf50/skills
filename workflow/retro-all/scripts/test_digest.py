@@ -194,6 +194,7 @@ with tempfile.TemporaryDirectory() as t:
 
     # new: a fresh ledger, a literal {id} in a title, and a blank title.
     assert '0 findings' in run('--ledger', f'{t}/fresh', 'index', mod=ledger_py)
+    assert f'in {t}/fresh;' in run('index', '--ledger', f'{t}/fresh', mod=ledger_py), '--ledger after the subcommand'
     path = run('--ledger', f'{t}/fresh', 'new', 'skill', 'expand {id} here', mod=ledger_py).splitlines()[-1]
     assert open(path).read().startswith('# F-1 expand {id} here\n')
     try:

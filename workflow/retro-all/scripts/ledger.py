@@ -10,7 +10,7 @@ The first command on a ledger whose findings.md still holds the finding blocks s
 """
 import argparse, json, os, re, sys
 
-from digest import LEDGER, complete_lines, read_ledger, utf8_safe_stdout
+from digest import LEDGER, complete_lines, read_ledger, to_local, utf8_safe_stdout
 
 STATUSES = ('open', 'in-progress', 'fixed', 'wontfix', 'watch')
 CATEGORIES = ('skill', 'patch', 'correction', 'guardrail', 'navigation', 'tool-economy', 'information-access')
@@ -133,6 +133,8 @@ def recheck(args):
     hits = {f['id']: [] for f, _ in live}
     for row in open(os.path.join(args.dir, 'pending.tsv'), encoding='utf-8'):
         sid, path, end, prev = (row.rstrip('\n').split('\t') + ['0'])[:4]
+        if not os.path.exists(path):
+            path = to_local(path)   # digested on the Windows side, rechecked from WSL
         try:
             _, lines = complete_lines(path, int(prev), int(end))   # exactly the span digest.py summarised
         except OSError as e:
@@ -164,13 +166,16 @@ def recheck(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('--ledger', default=LEDGER)
+    # --ledger also after the subcommand; SUPPRESS keeps a subparser default from overwriting one given before it.
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument('--ledger', default=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest='cmd', required=True)
-    sub.add_parser('index')
-    p = sub.add_parser('new')
+    sub.add_parser('index', parents=[common])
+    p = sub.add_parser('new', parents=[common])
     p.add_argument('category', choices=CATEGORIES)
     p.add_argument('title')
-    sub.add_parser('recheck').add_argument('dir')
-    sub.add_parser('import').add_argument('other')
+    sub.add_parser('recheck', parents=[common]).add_argument('dir')
+    sub.add_parser('import', parents=[common]).add_argument('other')
     args = ap.parse_args(argv)
     utf8_safe_stdout()
     {'index': index, 'new': new, 'recheck': recheck, 'import': import_}[args.cmd](args)
