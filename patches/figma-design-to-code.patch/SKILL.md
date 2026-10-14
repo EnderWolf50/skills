@@ -1,11 +1,12 @@
 ---
 name: figma-design-to-code.patch
 description: "Patch for figma-design-to-code: a design drawn as several state frames; spec notes are requirements; copy changes asked first; every state compared by screenshot."
+patch-tools: mcp__*tempad-dev__*
 disable-model-invocation: true
 user-invocable: false
 ---
 
-When running `figma-design-to-code` on a design drawn as several frames, one per state (filled, verifying, failed, success, confirm dialog):
+When reading or implementing a Figma design through TemPad Dev (`figma-design-to-code` or its tools directly) that is drawn as several frames, one per state (filled, verifying, failed, success, confirm dialog). The first three items apply to reading too; implementing also follows `figma-design-to-code`:
 
 - **Pick the frames first.** `get_structure` on the link's node (`node-id=41240-234783` is `41240:234783`) or the selection, `options.depth: 1` for a whole section. A canvas often holds several generations of one screen: the current ones sit beside the spec notes (`Note`, `規格說明`), and state frames are named by state (`f1 填寫`, `f3 驗證失效`). `get_screenshot` each and name what each state shows that the others do not. Done: one frame id per state.
 - **Spec notes are requirements.** Read every note beside the frames with `get_code`. A state a note describes (loading, confirm dialog, hover) is evidenced: build it, overriding "implement only evidenced states".
