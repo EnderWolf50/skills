@@ -86,13 +86,21 @@ def git_root(path, wsl=''):
             # Absolute (either side's form) or relative to the worktree (worktree.useRelativePaths).
             gd = to_local(gd.replace('\\', '/'), wsl) if re.match(r'^([\\/]|[A-Za-z]:)', gd) else os.path.normpath(os.path.join(p, gd))
             gd = gd.replace('\\', '/')
-            return os.path.dirname(gd.rsplit('/worktrees/', 1)[0]) if '/worktrees/' in gd else p
+            if '/worktrees/' not in gd:
+                return p
+            common = gd.rsplit('/worktrees/', 1)[0]
+            # <repo>/.git -> <repo>; a bare <repo>.git -> <repo>
+            return os.path.dirname(common) if common.endswith('/.git') else re.sub(r'\.git$', '', common)
         p = os.path.dirname(p)
     return None
 
 
 def bucket(cwd, wsl=''):
     """Repo name for a session's cwd, with worktrees folded into their repo."""
+    # The checkout itself is the truth while it exists; the name rules below cover worktrees since removed.
+    root = git_root(cwd or '', wsl)
+    if root:
+        return os.path.basename(root)
     parts = [x for x in re.split(r'[\\/]+', cwd or '') if x]
     if len(parts) > 1 and parts[0] == 'mnt' and len(parts[1]) == 1:
         parts = [parts[1] + ':'] + parts[2:]         # /mnt/c/... reads like C:\... from either side
@@ -109,9 +117,6 @@ def bucket(cwd, wsl=''):
             return parts[i + 1]                      # .wt/<repo>
         if len(x) > 3 and x.endswith(('.wt', '-wt')):
             return parts[i][:-3]                     # <repo>.wt/<name>, <repo>-wt/<name>
-    root = git_root(cwd or '', wsl)
-    if root:
-        return os.path.basename(root)
     # Not a git checkout: the second level below home or the drive root (learning/pstack/practice/x -> pstack).
     rel = parts[3:] if len(low) > 2 and low[1] == 'users' else parts[2:] if low[:1] == ['home'] else parts[1:]
     if not rel:
@@ -241,7 +246,8 @@ def digest(args):
                 cur = ''
             cur += blk
         parts.append(cur)
-        files = [f'{b}.md'] if len(parts) == 1 else [f'{b}-{i}.md' for i in range(1, len(parts) + 1)]
+        # .part<i> cannot clash with another bucket's name the way <b>-<i> can (buckets foo and foo-1).
+        files = [f'{b}.md'] if len(parts) == 1 else [f'{b}.part{i}.md' for i in range(1, len(parts) + 1)]
         for n, body in zip(files, parts):
             with open(os.path.join(args.out, n), 'w', encoding='utf-8', newline='\n') as w:
                 w.write(body)

@@ -147,8 +147,37 @@ with tempfile.TemporaryDirectory() as t:
     os.makedirs(f'{t}/myrepo/.worktrees/feat')
     open(f'{t}/myrepo/.worktrees/feat/.git', 'w').write('gitdir: ../../.git/worktrees/feat\n')
     assert os.path.basename(digest.git_root(f'{t}/myrepo/.worktrees/feat')) == 'myrepo'
+    # A live worktree under .wt/<name> buckets by its repo, not by the folder name.
+    os.makedirs(f'{t}/myrepo/.git/worktrees/other')
+    os.makedirs(f'{t}/.wt/other')
+    open(f'{t}/.wt/other/.git', 'w').write(f'gitdir: {t}/myrepo/.git/worktrees/other\n')
+    assert digest.bucket(f'{t}/.wt/other') == 'myrepo'
+    # A worktree of a bare <repo>.git buckets as <repo>.
+    os.makedirs(f'{t}/proj.git/worktrees/x')
+    os.makedirs(f'{t}/wx')
+    open(f'{t}/wx/.git', 'w').write(f'gitdir: {t}/proj.git/worktrees/x\n')
+    assert digest.bucket(f'{t}/wx') == 'proj'
 
-help_out = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user-msgs.py'), '--help'],
+    # Parts of a split bucket cannot overwrite a bucket named like a part (foo split in two, plus foo-1).
+    os.makedirs(f'{t}/r/q')
+    for sid, cwd in (('llll0001', 'foo'), ('llll0002', 'foo'), ('llll0003', 'foo-1')):
+        open(f'{t}/r/q/{sid}.jsonl', 'w').write(''.join(user(f'Q:\\NoRepo\\{cwd}\\x', f'{sid} {i} ' + 'x' * 500) for i in range(3)))
+    res = run('--all', '--roots', f'{t}/r', '--ledger', ledger, '--out', f'{t}/split', '--max-kb', '2')
+    assert 'files=foo.part1.md,foo.part2.md' in res and 'files=foo-1.md' in res, res
+    assert 'llll0003' not in open(f'{t}/split/foo.part1.md').read() + open(f'{t}/split/foo.part2.md').read()
+
+    # new: a fresh ledger, a literal {id} in a title, and a blank title.
+    assert '0 findings' in run('--ledger', f'{t}/fresh', 'index', mod=ledger_py)
+    path = run('--ledger', f'{t}/fresh', 'new', 'skill', 'expand {id} here', mod=ledger_py).splitlines()[-1]
+    assert open(path).read().startswith('# F-1 expand {id} here\n')
+    try:
+        run('--ledger', f'{t}/fresh', 'new', 'skill', ' ', mod=ledger_py)
+        raise AssertionError('a blank title must be refused')
+    except SystemExit as e:
+        assert 'one non-empty line' in str(e)
+    assert '1 findings' in run('--ledger', f'{t}/fresh', 'index', mod=ledger_py)
+
+help_out = subprocess.run([sys.executable, '-B', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'user-msgs.py'), '--help'],
                           capture_output=True, text=True)
 assert help_out.returncode == 0 and 'session-id-prefix' in help_out.stdout, help_out
 print('ok')
