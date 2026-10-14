@@ -7,7 +7,7 @@
 Sessions already in the ledger are skipped unless their transcript grew, and a grown one is digested
 from where the last review stopped; --all ignores the ledger.
 """
-import argparse, collections, datetime, glob, json, os, re, subprocess, sys
+import argparse, collections, datetime, functools, glob, json, os, re, subprocess, sys
 
 HOME = os.path.expanduser('~')
 
@@ -17,7 +17,8 @@ def wsl_distros():
         out = subprocess.run(['wsl.exe', '-l', '-q'], capture_output=True, timeout=10).stdout
     except (OSError, subprocess.SubprocessError):
         return []
-    return out.decode('utf-16-le', errors='replace').replace('\0', '').split()
+    # wsl.exe prints UTF-16 unless WSL_UTF8=1 is set.
+    return out.decode('utf-16-le' if b'\0' in out else 'utf-8', errors='replace').replace('\0', '').split()
 
 
 WINDOWS_SIDE = [] if os.name == 'nt' else [os.path.dirname(p) for p in glob.glob('/mnt/c/Users/*/.claude/projects')]
@@ -85,36 +86,69 @@ def git_root(path, wsl=''):
             gd = m.group(1).strip()
             # Absolute (either side's form) or relative to the worktree (worktree.useRelativePaths).
             gd = to_local(gd.replace('\\', '/'), wsl) if re.match(r'^([\\/]|[A-Za-z]:)', gd) else os.path.normpath(os.path.join(p, gd))
-            gd = gd.replace('\\', '/')
-            if '/worktrees/' not in gd:
-                return p
-            common = gd.rsplit('/worktrees/', 1)[0]
-            # <repo>/.git -> <repo>; a bare <repo>.git -> <repo>
-            return os.path.dirname(common) if common.endswith('/.git') else re.sub(r'\.git$', '', common)
+            m = re.match(r'(.*)/worktrees/[^/]+/?$', gd.replace('\\', '/'))
+            if not m:
+                return p                             # a submodule's .git/modules/<name>, not a worktree
+            common = m.group(1)
+            # <repo>/.git or <repo>/.bare -> <repo>; a bare <repo>.git -> <repo>
+            return os.path.dirname(common) if os.path.basename(common).startswith('.') else re.sub(r'\.git$', '', common)
         p = os.path.dirname(p)
     return None
 
 
-def bucket(cwd, wsl=''):
-    """Repo name for a session's cwd, with worktrees folded into their repo."""
-    # The checkout itself is the truth while it exists; the name rules below cover worktrees since removed.
-    root = git_root(cwd or '', wsl)
-    if root:
-        return os.path.basename(root)
+@functools.lru_cache(maxsize=None)
+def knows_branch(repo, branch):
+    """repo has branch, or a merge commit naming it (GitLab "Merge branch '<b>'", GitHub "from <owner>/<b>")."""
+    git = ['git', '-C', repo]
+    try:
+        for ref in (f'refs/heads/{branch}', f'refs/remotes/origin/{branch}'):
+            if subprocess.run(git + ['rev-parse', '--verify', '--quiet', ref], capture_output=True, timeout=10).returncode == 0:
+                return True
+        b = re.sub(r'([.^$*+?()\[\]{}|\\])', r'\\\1', branch)
+        out = subprocess.run(git + ['log', '--all', '-1', '--format=%H', '-E', f"--grep=['/]{b}('|$)"],
+                             capture_output=True, timeout=60).stdout
+        return bool(out.strip())
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def removed_worktree_repo(cwd, name, branch, wsl):
+    """Repo of a <parent>/.wt/<name> worktree that no longer exists: the one checkout beside .wt whose name <name>
+    starts with, else the one whose history knows the session's branch; None when that is not exactly one."""
+    m = re.match(r'(.*?)[\\/]\.wt[\\/]', cwd, re.I)
+    parent = m.group(1) if m else ''
+    parent = to_local(parent + ('\\' if re.fullmatch(r'[A-Za-z]:', parent) else ''), wsl)
+    try:
+        repos = [d for d in os.listdir(parent) if os.path.exists(os.path.join(parent, d, '.git'))]
+    except OSError:
+        return None
+    hits = [r for r in repos if name.lower() == r.lower() or name.lower().startswith(r.lower() + '-')]
+    if not hits and branch and branch != 'HEAD':
+        hits = [r for r in repos if knows_branch(os.path.join(parent, r), branch)]
+    return hits[0] if len(hits) == 1 else None
+
+
+def bucket(cwd, wsl='', branch=''):
+    """Repo name for a session's cwd, with worktrees folded into their repo; branch is the session's gitBranch."""
     parts = [x for x in re.split(r'[\\/]+', cwd or '') if x]
     if len(parts) > 1 and parts[0] == 'mnt' and len(parts[1]) == 1:
         parts = [parts[1] + ':'] + parts[2:]         # /mnt/c/... reads like C:\... from either side
     low = [x.lower() for x in parts]
+    # Scratch areas stay one bucket even when a scratch folder is itself a git repo.
+    if any(x == '.t3' and nxt == 'scratch' for x, nxt in zip(low, low[1:])) or {'tmp', 'temp', 'scratch-workspaces'} & set(low):
+        return 'scratch'
+    # The checkout itself is the truth while it exists; the name rules below cover worktrees since removed.
+    root = git_root(cwd or '', wsl)
+    if root:
+        return os.path.basename(root)
     for i, x in enumerate(low):
         nxt = low[i + 1] if i + 1 < len(low) else ''
         if x == '.claude' and nxt == 'worktrees' and i:
             return parts[i - 1]                      # <repo>/.claude/worktrees/<name>
         if x == '.t3' and nxt == 'worktrees' and i + 2 < len(parts):
             return parts[i + 2]                      # ~/.t3/worktrees/<repo>/<name>
-        if x == '.t3' and nxt == 'scratch' or x in ('tmp', 'temp', 'scratch-workspaces'):
-            return 'scratch'
         if x == '.wt' and nxt:
-            return parts[i + 1]                      # .wt/<repo>
+            return removed_worktree_repo(cwd, parts[i + 1], branch, wsl) or parts[i + 1]   # .wt/<name>, .wt/<repo>/<name>
         if len(x) > 3 and x.endswith(('.wt', '-wt')):
             return parts[i][:-3]                     # <repo>.wt/<name>, <repo>-wt/<name>
     # Not a git checkout: the second level below home or the drive root (learning/pstack/practice/x -> pstack).
@@ -138,7 +172,7 @@ def read_session(path, offset=0):
     """(end offset, summary of the transcript's complete lines from byte offset on); the summary is None when they
     hold no user message."""
     users, errs, skills, tools = [], [], [], collections.Counter()
-    ts = cwd = None
+    ts = cwd = branch = None
     turns = denied = 0
     end, lines = complete_lines(path, offset)
     for line in lines:
@@ -150,6 +184,7 @@ def read_session(path, offset=0):
             continue
         ts = ts or j.get('timestamp')
         cwd = cwd or j.get('cwd')
+        branch = branch or (j.get('gitBranch') if j.get('gitBranch') != 'HEAD' else None)
         m = j.get('message') or {}
         if j.get('type') == 'user' and not j.get('isMeta') and not j.get('isSidechain'):
             c = m.get('content')
@@ -176,7 +211,7 @@ def read_session(path, offset=0):
                         skills.append((b.get('input') or {}).get('skill'))
     if not users:
         return end, None
-    return end, dict(ts=ts or '', cwd=cwd or '', offset=offset, users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
+    return end, dict(ts=ts or '', cwd=cwd or '', branch=branch or '', offset=offset, users=users, errs=errs, skills=skills, tools=tools, turns=turns, denied=denied)
 
 
 def render(sid, path, s):
@@ -230,7 +265,7 @@ def digest(args):
             continue
         pending.append(f'{sid}\t{path}\t{end}\t{prev}\n')
         if s:
-            b = bucket(s['cwd'], wsl_prefix(path))
+            b = bucket(s['cwd'], wsl_prefix(path), s['branch'])
             # Bucket names become file names, which Windows compares without case.
             buckets[names.setdefault(b.lower(), b)].append((s['ts'], render(sid, path, s)))
     with open(os.path.join(args.out, 'pending.tsv'), 'w', encoding='utf-8', newline='\n') as w:

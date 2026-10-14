@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Self-test for digest.py on synthetic transcripts: python3 test_digest.py"""
-import contextlib, io, json, os, re, subprocess, sys, tempfile
+import contextlib, io, json, os, re, shutil, subprocess, sys, tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import digest, ledger as ledger_py
@@ -147,16 +147,39 @@ with tempfile.TemporaryDirectory() as t:
     os.makedirs(f'{t}/myrepo/.worktrees/feat')
     open(f'{t}/myrepo/.worktrees/feat/.git', 'w').write('gitdir: ../../.git/worktrees/feat\n')
     assert os.path.basename(digest.git_root(f'{t}/myrepo/.worktrees/feat')) == 'myrepo'
-    # A live worktree under .wt/<name> buckets by its repo, not by the folder name.
+    # (bucket() would call every path under the temp dir `scratch`, so these check git_root itself.)
+    def repo_of(path):
+        return os.path.basename(digest.git_root(path))
+
+    def worktree(path, gitdir):
+        os.makedirs(path)
+        open(f'{path}/.git', 'w').write(f'gitdir: {gitdir}\n')
+    # A live worktree under .wt/<name> resolves to its repo, not to the folder name.
     os.makedirs(f'{t}/myrepo/.git/worktrees/other')
-    os.makedirs(f'{t}/.wt/other')
-    open(f'{t}/.wt/other/.git', 'w').write(f'gitdir: {t}/myrepo/.git/worktrees/other\n')
-    assert digest.bucket(f'{t}/.wt/other') == 'myrepo'
-    # A worktree of a bare <repo>.git buckets as <repo>.
+    worktree(f'{t}/.wt/other', f'{t}/myrepo/.git/worktrees/other')
+    assert repo_of(f'{t}/.wt/other') == 'myrepo'
+    # A worktree of a bare <repo>.git, or of a bare clone kept in <repo>/.bare, is <repo>.
     os.makedirs(f'{t}/proj.git/worktrees/x')
-    os.makedirs(f'{t}/wx')
-    open(f'{t}/wx/.git', 'w').write(f'gitdir: {t}/proj.git/worktrees/x\n')
-    assert digest.bucket(f'{t}/wx') == 'proj'
+    worktree(f'{t}/wx', f'{t}/proj.git/worktrees/x')
+    assert repo_of(f'{t}/wx') == 'proj'
+    os.makedirs(f'{t}/baredproj/.bare/worktrees/main')
+    worktree(f'{t}/baredproj/main', f'{t}/baredproj/.bare/worktrees/main')
+    assert repo_of(f'{t}/baredproj/main') == 'baredproj'
+    # A submodule inside a folder named worktrees is its own checkout, not a worktree.
+    os.makedirs(f'{t}/worktrees/app/.git/modules/lib')
+    worktree(f'{t}/worktrees/app/lib', '../.git/modules/lib')
+    assert repo_of(f'{t}/worktrees/app/lib') == 'lib'
+
+    # A removed .wt/<name> worktree: the checkout beside .wt that <name> starts with, else the one whose
+    # history names the session's branch.
+    assert digest.removed_worktree_repo(f'{t}/.wt/myrepo-gone', 'myrepo-gone', '', '') == 'myrepo'
+    if shutil.which('git'):
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@t', '-C', f'{t}/CRM']
+        os.makedirs(f'{t}/CRM')
+        subprocess.run(git + ['init', '-q'], check=True)
+        subprocess.run(git + ['commit', '-q', '--allow-empty', '-m', "Merge branch 'feature/3197-x' into 'master'"], check=True)
+        assert digest.removed_worktree_repo(f'{t}/.wt/3197-01', '3197-01', 'feature/3197-x', '') == 'CRM'
+        assert digest.removed_worktree_repo(f'{t}/.wt/3197-01', '3197-01', 'feature/3197', '') is None, 'a branch prefix is not the branch'
 
     # Parts of a split bucket cannot overwrite a bucket named like a part (foo split in two, plus foo-1).
     os.makedirs(f'{t}/r/q')
