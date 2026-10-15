@@ -1,6 +1,6 @@
 ---
 name: compare-alternatives
-description: Compare candidate tools, libraries or apps side by side for the user and recommend one. Use when asked for alternatives to X, "X vs Y vs Z", whether a tool beats what the user already uses, or which project to pick by GitHub stars and community reception.
+description: Compare candidate tools, libraries or apps side by side for the user and recommend one. Use when asked for alternatives to X ("<tool or repo URL> alternatives?"), "X vs Y vs Z", whether a tool beats what the user already uses, or which project to pick by GitHub stars and community reception.
 ---
 
 **Route first.** Candidates that are all npm packages → run `npm-package-comparator` instead (it adds downloads, bundle size and Snyk vulnerabilities). Finding self-hostable open source replacements for a paid SaaS or API → run `oss-alternatives` instead. Anything else, or the user asks for this table, → continue here.
