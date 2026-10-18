@@ -102,7 +102,8 @@ def encoder_args(choice="auto"):
 
 def prune(out_dir, keep_gb):
     """Delete the oldest recordings this script wrote (rec_<profile>_<date>_<time>.mp4) until they fit in keep_gb."""
-    files = sorted(out_dir.glob(f"{PREFIX}*_????????_??????.mp4"), key=lambda p: p.stat().st_mtime)
+    own = re.compile(rf"{PREFIX}(?:[\w-]+_)?\d{{8}}_\d{{6}}\.mp4")  # also rec_<date>_<time>.mp4 from before profiles
+    files = sorted((p for p in out_dir.glob(f"{PREFIX}*.mp4") if own.fullmatch(p.name)), key=lambda p: p.stat().st_mtime)
     total = sum(p.stat().st_size for p in files)
     while files and total > keep_gb * 2**30:
         p = files.pop(0)
@@ -145,12 +146,15 @@ def state_path(profile):
 
 
 def load(path):
-    """Read a state file; a torn read (the writer is mid-replace) is retried once."""
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError:
-        time.sleep(0.1)
-        return json.loads(path.read_text(encoding="utf-8"))
+    """Read a state file. A read racing the writer's os.replace fails with a sharing violation on Windows
+    (PermissionError), or with a torn read elsewhere; both are retried for about a second."""
+    for i in range(10):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, PermissionError):
+            if i == 9:
+                raise
+            time.sleep(0.1)
 
 
 def save(path, st):
@@ -196,8 +200,11 @@ def ffmpeg_alive(st):
 
 
 def running(st):
-    """True while a recording of this state can still be stopped: not ended, runner or ffmpeg still alive."""
-    return not st.get("ended") and (runner_alive(st) or ffmpeg_alive(st))
+    """True while a recording of this state can still be stopped. Once ffmpeg's pid is known only ffmpeg counts:
+    a stale runner pid is easily reused by another python.exe, which would block `start` and `stop` for good."""
+    if st.get("ended"):
+        return False
+    return ffmpeg_alive(st) if st.get("ffmpeg_pid") else runner_alive(st)
 
 
 # ---------------------------------------------------------------- checks
@@ -306,7 +313,9 @@ def stop(a):
                 if load(sp).get("ended"):
                     break
             else:
-                sys.exit(f"recorder did not finish within 30 s; ffmpeg pid {st.get('ffmpeg_pid')}")
+                if ffmpeg_alive(load(sp)):
+                    sys.exit(f"recorder did not finish within 30 s; ffmpeg pid {st.get('ffmpeg_pid')}")
+                # ffmpeg is gone and only the runner bookkeeping is stale: remux what it wrote
         elif ffmpeg_alive(st):  # the runner died but Windows ffmpeg keeps recording: end it hard, the MKV survives
             kill_tree(st["ffmpeg_pid"])
             time.sleep(0.5)

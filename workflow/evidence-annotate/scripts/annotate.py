@@ -164,7 +164,7 @@ def load_masks(path):
         if tpl is None:
             sys.exit(f"mask template {m['template']} not readable")
         for b in m["boxes"]:
-            if len(b) != 4 or b[2] <= 0 or b[3] <= 0:
+            if len(b) != 4 or not all(isinstance(v, (int, float)) for v in b) or b[2] <= 0 or b[3] <= 0:
                 sys.exit(f"mask {m['template']}: box must be [x,y,w,h] with w and h above 0, got {b}")
         out.append((tpl, m.get("threshold", 0.8), m["boxes"]))
     return out, parse_space(doc, "masks")

@@ -65,6 +65,32 @@ def test_prune_deletes_only_our_oldest_mp4(tmp_path):
     assert [p.exists() for p in mine] == [False, True, True] and other.exists()
 
 
+def test_prune_still_counts_names_from_before_profiles(tmp_path):
+    old = tmp_path / "rec_20251231_235959.mp4"  # written before files carried a profile
+    new = tmp_path / "rec_p_20260101_000000.mp4"
+    for i, p in enumerate((old, new)):
+        p.write_bytes(b"x" * 1024)
+        os.utime(p, (time.time() - 100 + i, time.time() - 100 + i))
+    screenrec.prune(tmp_path, 1024 / 2**30)  # room for one file
+    assert not old.exists() and new.exists()
+
+
+def test_load_retries_a_read_that_races_the_writer(tmp_path, monkeypatch):
+    sp = tmp_path / "s.json"
+    sp.write_text('{"ok": 1}', encoding="utf-8")
+    real, calls = type(sp).read_text, []
+
+    def flaky(self, *a, **k):  # Windows: reading while another process os.replace()s gives a sharing violation
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(13, "sharing violation")
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(type(sp), "read_text", flaky)
+    monkeypatch.setattr(screenrec.time, "sleep", lambda s: None)
+    assert screenrec.load(sp) == {"ok": 1} and len(calls) == 3
+
+
 # ---------------------------------------------------------------- process handling (mocked)
 
 @pytest.fixture
@@ -143,10 +169,17 @@ def test_start_refuses_a_live_profile_under_another_out(env):
 def test_running_ignores_a_reused_pid_and_an_ended_state(env):
     d = env.tmp
     sp = screenrec.state_file(d, "p")
-    write_state(sp, runner_pid=500, ffmpeg_pid=501)
-    env.procs[500] = "chrome.exe"  # the pid was reused by another program
+    # Before ffmpeg is up, the runner decides; a reused runner pid does not count.
+    write_state(sp, runner_pid=500)
+    env.procs[500] = "chrome.exe"
     assert not screenrec.running(screenrec.load(sp))
     env.procs[500] = "python.exe"
+    assert screenrec.running(screenrec.load(sp))
+    # Once ffmpeg's pid is known, only ffmpeg decides: a stale runner pid reused by another python.exe
+    # must not keep the profile "recording" forever.
+    write_state(sp, runner_pid=500, ffmpeg_pid=501)
+    assert not screenrec.running(screenrec.load(sp))
+    env.procs[501] = "ffmpeg.exe"
     assert screenrec.running(screenrec.load(sp))
     assert not screenrec.running({**screenrec.load(sp), "ended": True})
     assert not screenrec.running({"cmd": []})  # a state with no pids at all (pid 0) is not "recording"
