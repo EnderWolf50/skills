@@ -1,0 +1,5 @@
+[
+ {"from":"10:00:02.0","to":"10:00:05.0","title":"Open the item","note":"optional second line",
+  "boxes":[[600,330,80,60,"target"]]},
+ {"from":"10:00:05.0","to":"10:00:11.0","title":"Scroll, then drag","zoom":[200,150,600,400]}
+]
