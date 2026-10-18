@@ -57,6 +57,49 @@ def test_unknown_kind_is_an_error():
         a.gestures([ev("10:00:00", "wiggle", 1, 1)])
 
 
+def test_stray_up_and_two_finger_sequence_do_not_raise():
+    assert a.gestures([ev("10:00:00.0", "up")]) == []
+    gs = a.gestures([ev("10:00:00.0", "down", 10, 10), ev("10:00:00.1", "down", 50, 50),
+                     ev("10:00:00.2", "up"), ev("10:00:00.3", "up")])  # last `up` has nothing held
+    assert len(gs) == 2 and gs[0]["t1"] == pytest.approx(a.hms("10:00:00.1"))
+
+
+def test_events_missing_coordinates_name_the_gap():
+    with pytest.raises(ValueError, match="x2"):
+        a.gestures([ev("10:00:00", "swipe", 1, 1, y2=5)])
+    with pytest.raises(ValueError, match="tap"):
+        a.gestures([{"t": "10:00:00", "kind": "tap"}])
+
+
+def test_fmt_rounds_without_printing_sixty_seconds():
+    assert a.fmt(a.hms("14:30:59.97")) == "14:31:00.0"
+    assert a.fmt(a.hms("14:30:41.2")) == "14:30:41.2"
+    assert a.fmt(a.hms("14:30:59.9996"), 3) == "14:31:00.000"
+    assert a.fmt(86399.99) == "00:00:00.0"
+
+
+def test_frame_indices_pick_nearest_frame_and_warn_outside_the_cut(capsys):
+    start, ss = a.hms("10:00:00"), 2.0  # clip starts 2 s in, 300 frames at 30 fps
+    assert a.frame_indices(["10:00:03.0", "10:00:02.0"], start, ss, 30, 300) == {30, 0}
+    assert a.frame_indices(["10:00:01.0", "10:00:12.0"], start, ss, 30, 300) == set()  # before the cut, and past its end
+    assert capsys.readouterr().err.count("outside the cut") == 2
+
+
+def test_zoom_region_must_have_area(tmp_path):
+    (tmp_path / "s.json").write_text(json.dumps([{"from": "10:00:00", "to": "10:00:05", "title": "t", "zoom": [0, 0, 100, 0]}]))
+    with pytest.raises(SystemExit):
+        a.load_steps(tmp_path / "s.json")
+
+
+def test_zoom_frame_crops_scales_back_and_clamps_at_the_edges():
+    frame = np.zeros((72, 128, 3), np.uint8)
+    frame[:, 64:] = 255  # right half white
+    assert a.zoom_frame(frame, (640, 0, 640, 720), SPACE).min() == 255  # right half
+    assert a.zoom_frame(frame, (0, 0, 640, 720), SPACE).max() == 0  # left half
+    for region in ((-100, -100, 300, 300), (1200, 700, 500, 500), (1279, 719, 1, 1)):  # off-frame, partly off, tiny
+        assert a.zoom_frame(frame, region, SPACE).shape == (72, 128, 3)
+
+
 def test_coordinates_map_by_frame_size_per_axis():
     p = a.Painter(2560, 720, SPACE, a.pick_font(None))  # x doubled, y unchanged
     assert p.xy(640, 360) == (1280, 360)
@@ -80,7 +123,7 @@ def test_ease_is_clamped_smoothstep():
 def test_fit_region_matches_aspect_keeps_centre_and_stays_inside():
     x, y, w, h = a.fit_region([100, 100, 200, 50], SPACE)
     assert w / h == pytest.approx(16 / 9)
-    assert (x + w / 2, y + h / 2) == pytest.approx((200, 125)) or y == 0  # centre kept unless slid inside
+    assert (x + w / 2, y + h / 2) == pytest.approx((200, 125))  # centre kept
     x, y, w, h = a.fit_region([1200, 650, 80, 70], SPACE)
     assert x + w <= 1280 + 1e-9 and y + h <= 720 + 1e-9 and x >= 0 and y >= 0
 
@@ -118,6 +161,17 @@ def test_apply_masks_blacks_boxes_in_span_only_and_scales_to_frame():
     assert frame.min() == 200
     a.apply_masks(frame, 2.0, masks, spans, SPACE)
     assert frame[20:30, 10:40].max() == 0 and frame[19, 10].min() == 200 and frame[20, 41].min() == 200
+
+
+def test_apply_masks_clamps_boxes_that_start_outside_the_frame():
+    masks, spans = [(None, 0.8, [[-300, -200, 500, 400], [1200, 650, 500, 500]])], [[[0.0, 1.0]]]
+    frame = np.full((72, 128, 3), 200, np.uint8)
+    a.apply_masks(frame, 0.5, masks, spans, SPACE)
+    assert frame[0:20, 0:20].max() == 0 and frame[20:, 20:120].min() == 200  # top-left corner blacked, middle kept
+    assert frame[65:, 120:].max() == 0  # bottom-right corner blacked
+    frame = np.full((72, 128, 3), 200, np.uint8)
+    a.apply_masks(frame, 0.5, [(None, 0.8, [[-900, 0, 100, 100]])], spans, SPACE)  # wholly outside: nothing, no wraparound
+    assert frame.min() == 200
 
 
 def test_load_masks_resolves_templates_next_to_the_masks_file(tmp_path):

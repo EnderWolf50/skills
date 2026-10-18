@@ -50,9 +50,12 @@ def hms(s):
     return int(h) * 3600 + int(m) * 60 + float(sec)
 
 
-def fmt(t):
-    t = t % 86400
-    return f"{int(t // 3600):02d}:{int(t % 3600 // 60):02d}:{t % 60:04.1f}"
+def fmt(t, nd=1):
+    """Seconds of the day -> 'HH:MM:SS.f' with nd decimals; rounds first so it never prints seconds = 60."""
+    k = 10 ** nd
+    n = round(t * k) % (86400 * k)
+    s, f = divmod(n, k)
+    return f"{s // 3600:02d}:{s % 3600 // 60:02d}:{s % 60:02d}.{f:0{nd}d}"
 
 
 # ---------------------------------------------------------------- events -> gestures
@@ -64,6 +67,9 @@ def gestures(events):
     out, held = [], None
     for e in sorted(events, key=lambda e: hms(e["t"])):
         t, k = hms(e["t"]), e["kind"]
+        need = {"tap": "xy", "swipe": ("x", "y", "x2", "y2"), "down": "xy"}.get(k, ())
+        if missing := [f for f in need if f not in e]:
+            raise ValueError(f"{k} event at {e['t']} lacks {', '.join(missing)}: {e}")
         if k in ("tap", "swipe"):
             d = e.get("ms", 50 if k == "tap" else 200) / 1000
             pts = [(t, e["x"], e["y"])] + ([(t + d, e["x2"], e["y2"])] if k == "swipe" else [])
@@ -73,11 +79,12 @@ def gestures(events):
                 held["t1"] = t
             held = {"t0": t, "t1": t, "pts": [(t, e["x"], e["y"])]}
             out.append(held)
-        elif k == "up" and held:
-            if "x" in e:
-                held["pts"].append((t, e["x"], e["y"]))
-            held["t1"] = t
-            held = None
+        elif k == "up":
+            if held:  # a stray `up` (nothing held) is ignored
+                if "x" in e:
+                    held["pts"].append((t, e["x"], e["y"]))
+                held["t1"] = t
+                held = None
         else:
             raise ValueError(f"bad event {e}")
     if held:
@@ -103,6 +110,9 @@ def load_steps(path):
     steps = json.loads(Path(path).read_text(encoding="utf-8"))
     for s in steps:
         s["from"], s["to"] = hms(s["from"]), hms(s["to"])
+        z = s.get("zoom")
+        if z and (len(z) != 4 or z[2] <= 0 or z[3] <= 0):
+            sys.exit(f"step {s.get('title')!r}: zoom must be [x,y,w,h] with w and h above 0, got {z}")
     return steps
 
 
@@ -187,18 +197,20 @@ def mask_spans(video, ss, dur, masks, space):
             if matches(gray, tpl, thr):
                 h.append(i / 2)
         i += 1
-    p.wait()
+    if p.wait():
+        sys.exit(f"ffmpeg failed while scanning for masks (rc {p.returncode})")
     return [merge_spans(h) for h in hits]
 
 
 def apply_masks(frame, tv, masks, spans, space):
-    """Black out the boxes of every mask whose span covers clip time tv."""
+    """Black out the boxes of every mask whose span covers clip time tv; boxes are clamped to the frame."""
     H, W = frame.shape[:2]
     for (_, _, boxes), sp in zip(masks, spans):
         if any(a <= tv <= b for a, b in sp):
             for x, y, w, h in boxes:
-                frame[round(y * H / space[1]):round((y + h) * H / space[1]),
-                      round(x * W / space[0]):round((x + w) * W / space[0])] = 0
+                y0, y1 = (min(max(round(v * H / space[1]), 0), H) for v in (y, y + h))
+                x0, x1 = (min(max(round(v * W / space[0]), 0), W) for v in (x, x + w))
+                frame[y0:y1, x0:x1] = 0
 
 
 # ---------------------------------------------------------------- drawing
@@ -368,16 +380,31 @@ def zoom_frame(frame, region, space):
     """Crop `region` (event-space [x,y,w,h]) out of the frame and scale it back to the frame size."""
     H, W = frame.shape[:2]
     x, y, w, h = region
-    x0, y0 = round(x * W / space[0]), round(y * H / space[1])
-    x1, y1 = max(x0 + 2, round((x + w) * W / space[0])), max(y0 + 2, round((y + h) * H / space[1]))
+    x0, y0 = min(max(round(x * W / space[0]), 0), W - 2), min(max(round(y * H / space[1]), 0), H - 2)
+    x1, y1 = min(max(x0 + 2, round((x + w) * W / space[0])), W), min(max(y0 + 2, round((y + h) * H / space[1])), H)
     return cv2.resize(frame[y0:y1, x0:x1], (W, H), interpolation=cv2.INTER_LINEAR)
 
 
 # ---------------------------------------------------------------- render
 
 def encoder_args():
-    have = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"], capture_output=True, text=True).stdout
-    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "27"] if "h264_nvenc" in have else ["-c:v", "libx264", "-crf", "23"]
+    """NVENC when a one-frame probe encode works (the -encoders list only says it was compiled in), else libx264."""
+    ok = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
+                         "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
+    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "27"] if ok else ["-c:v", "libx264", "-crf", "23"]
+
+
+def frame_indices(times, start, ss, fps, nframes):
+    """Frame numbers for wall `times` (HH:MM:SS.fff strings) in a clip that starts ss s after `start`.
+    Times outside the clip are reported on stderr and dropped."""
+    out = set()
+    for f in times:
+        n = round((hms(f) - start - ss) * fps)
+        if 0 <= n < nframes:
+            out.add(n)
+        else:
+            print(f"[annotate] warning: --frames {f} is outside the cut, skipped", file=sys.stderr, flush=True)
+    return out
 
 
 def render(args):
@@ -399,7 +426,7 @@ def render(args):
     print(f"[annotate] {len(gs)} gestures, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font))
-    want = {round((hms(f) - start - ss) * fps) for f in args.frames.split(",")} if args.frames else set()
+    want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
     enc = None if args.no_video else subprocess.Popen(
@@ -438,7 +465,7 @@ def render(args):
         paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else ""))
         blend(frame, ov)
         if n in want:
-            png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t).replace(':', '')}.png")
+            png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t, 3).replace(':', '')}.png")
             Image.fromarray(frame).save(png)
             print(f"[annotate] frame {png}", flush=True)
         if enc:
@@ -450,6 +477,9 @@ def render(args):
         enc.stdin.close()
         enc.wait()
     dec.wait()
+    if n == 0 or dec.returncode or (enc and enc.returncode):
+        sys.exit(f"no output: ffmpeg decode rc {dec.returncode}, encode rc {enc.returncode if enc else '-'}, {n} frames "
+                 f"(check VIDEO, --from/--to and --start)")
     print(f"[annotate] done ({n} frames)" + ("" if args.no_video else f", wrote {args.out}"), flush=True)
 
 
