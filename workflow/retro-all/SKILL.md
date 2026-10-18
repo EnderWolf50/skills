@@ -18,7 +18,7 @@ One ledger per machine holds the state between runs: `~/.claude/retro/`, on the 
   ```
   # F-<n> <title>
   status: open | in-progress | fixed | wontfix | watch
-  category: skill | patch | correction | guardrail | navigation | tool-economy | information-access
+  category: skill | patch | correction | guardrail | navigation | tool-economy | information-access | delegation | steering | script | docs
   evidence: <session-id8> <date> (<what happened>), ...
   fix: <PR/MR link, or repo + branch + commit while unpublished>
   recheck: <the pattern in a new session that means it recurred>
