@@ -13,7 +13,8 @@ import argparse, datetime, json, os, re, sys
 from digest import LEDGER, complete_lines, read_ledger, to_local, utf8_safe_stdout
 
 STATUSES = ('open', 'in-progress', 'fixed', 'wontfix', 'watch')
-CATEGORIES = ('skill', 'patch', 'correction', 'guardrail', 'navigation', 'tool-economy', 'information-access')
+CATEGORIES = ('skill', 'patch', 'correction', 'guardrail', 'navigation', 'tool-economy', 'information-access',
+              'delegation', 'steering', 'script', 'docs')
 LIVE = ('open', 'in-progress', 'fixed', 'watch')   # statuses whose recurrence matters
 
 

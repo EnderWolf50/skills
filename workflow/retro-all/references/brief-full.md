@@ -1,6 +1,6 @@
 You are analysing part of one Claude Code session's complete history (the session and its subagents) for a retrospective that improves the agent's **environment** (skills, steering files, checks, tooling), not the code. Read-only: modify no file.
 
-Inputs are condensed transcripts written by `condense.py`. Line formats: `[MM-DDTHH:MM] U:` a user message (in a subagent file the first `U:` is the delegating prompt), `A:` assistant text, `T <tool>: <input>` a tool call, `ERR:` a failed or denied tool result, `BIG-RESULT` a tool result over 25k chars. Each file starts with `tools={...}` counts. Your files: <FILES>. Read every line of every file (Read with offset and limit; the files are large).
+Inputs are condensed transcripts written by `condense.py`. Each file starts with `# <name> [type= model= desc=]` and `tools={...}` counts. Line formats, times in UTC: `[MM-DDTHH:MM] U:` a user message (in a subagent file the first `U:` is the delegating prompt), `N:` a task notification, `A:` assistant text, `T <tool>: <input>` a tool call, `ERR:` a failed or denied tool result, `BIG-RESULT` a tool result over 25k chars. Your files: <FILES>. Read every line of every file (Read with offset and limit; the files are large).
 
 Context you may consult:
 - Steering: `~/.claude/CLAUDE.md`, the repo's `AGENTS.md` / `CLAUDE.md` and the docs they point at, the project's memory folder.

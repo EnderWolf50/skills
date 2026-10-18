@@ -1,23 +1,26 @@
 #!/usr/bin/env python3
 """Condense one session and all its subagents into readable parts, for a retro over a session's complete history.
 
-  condense.py <session-id8> [--out DIR] [--chunk-kb 200] [--batches 5]
+  condense.py <session-id8> [--out DIR] [--chunk-kb 200] [--batch-kb 600]
 
 Writes DIR/main.NN.txt (the session, in parts of --chunk-kb), DIR/sub/<agent>.NN.txt (each subagent),
-DIR/batchN.lst (the subagent parts spread over --batches lists of even size) and DIR/reviews.txt (the
-security-review sub-sessions run during the session: count and the ones that reported findings).
-Line formats: `[MM-DDTHH:MM] U:` user message (a subagent's first is its brief), `A:` assistant text,
-`T <tool>: <input>`, `ERR:` failed or denied tool result, `BIG-RESULT` a tool result over 25k chars.
+DIR/batchN.lst (the subagent parts spread over as many lists as --batch-kb needs, of even size) and
+DIR/reviews.txt (the security-review sub-sessions run from the session's own checkouts, and the ones whose
+findings survived). DIR is cleared of earlier parts first.
+Each part starts with `# <name> [type= model= desc=]` and `tools={...}`. Line formats, times in UTC:
+`[MM-DDTHH:MM] U:` user message (a subagent's first is its brief), `N:` a task notification, `A:` assistant
+text, `T <tool>: <input>`, `ERR:` failed or denied tool result, `BIG-RESULT` a tool result over 25k chars.
 """
-import argparse, glob, json, os, re, sys
+import argparse, glob, json, math, os, re, shutil, sys
 
-from digest import LEDGER, REVIEW_PREFIXES, find_sessions, roots, utf8_safe_stdout
+from digest import LEDGER, REVIEW_PREFIXES, find_sessions, roots, text, utf8_safe_stdout
 
 SR = re.compile(r'<system-reminder>.*?</system-reminder>', re.S)
-DENIED = re.compile(r"doesn't want to proceed|denied|rejected|Permission")
+SKIP_USER = ('<local-command', 'Caveat:')
 
 
-def text(c):
+def blocks_text(c):
+    """Text of a content value: a string, or the text of every block (tool results included)."""
     if isinstance(c, str):
         return c
     return '\n'.join(b.get('text', '') if isinstance(b, dict) else str(b) for b in c or [])
@@ -29,13 +32,13 @@ def cut(s, n):
 
 
 def condense(path):
-    """(header, body, first timestamp, last timestamp) of one transcript."""
+    """(header, entry lines, first timestamp, last timestamp, cwds) of one transcript."""
     meta = path[:-6] + '.meta.json'
     head = f'# {os.path.basename(path)[:-6]}'
     if os.path.exists(meta):
         m = json.load(open(meta, encoding='utf-8'))
         head += f" type={m.get('agentType')} model={m.get('model')} desc={m.get('description')}"
-    lines, tools, first, last = [], {}, None, None
+    lines, tools, cwds, first, last = [], {}, set(), None, None
     for raw in open(path, encoding='utf-8', errors='replace'):
         try:
             d = json.loads(raw)
@@ -43,6 +46,8 @@ def condense(path):
             continue
         if not isinstance(d, dict) or d.get('type') not in ('user', 'assistant'):
             continue
+        if d.get('cwd'):
+            cwds.add(os.path.normcase(d['cwd']))
         full = d.get('timestamp') or ''
         first, last = first or full, full or last
         ts, c = full[5:16], (d.get('message') or {}).get('content')
@@ -50,12 +55,14 @@ def condense(path):
             blocks = c if isinstance(c, list) else []
             if isinstance(c, str) or any(isinstance(b, dict) and b.get('type') == 'text' for b in blocks):
                 s = SR.sub('', text(c)).strip()
-                if s and not d.get('isMeta'):
+                if s.startswith('<task-notification'):
+                    lines.append(f'[{ts}] N: {cut(s, 400)}\n')
+                elif s and not d.get('isMeta') and not s.startswith(SKIP_USER):
                     lines.append(f'\n[{ts}] U: {cut(s, 5000)}\n')
             for b in blocks:
                 if isinstance(b, dict) and b.get('type') == 'tool_result':
-                    s = text(b.get('content'))
-                    if b.get('is_error') or DENIED.search(s[:300]):
+                    s = blocks_text(b.get('content'))
+                    if b.get('is_error'):
                         lines.append(f'[{ts}] ERR: {cut(s, 600)}\n')
                     elif len(s) > 25000:
                         lines.append(f'[{ts}] BIG-RESULT {len(s)} chars: {cut(s, 150)}\n')
@@ -68,19 +75,21 @@ def condense(path):
                 elif b.get('type') == 'tool_use':
                     tools[b['name']] = tools.get(b['name'], 0) + 1
                     lines.append(f'[{ts}] T {b["name"]}: {cut(json.dumps(b.get("input"), ensure_ascii=False), 400)}\n')
-    return f'{head}\ntools={tools}\n', ''.join(lines), first or '', last or ''
+    return f'{head}\ntools={tools}\n', lines, first or '', last or '', cwds
 
 
-def parts(head, body, chunk_kb):
-    """Split on line starts so no entry is cut in half; each part repeats the header."""
-    out, cur, limit = [], '', chunk_kb * 1024
-    for entry in re.split(r'(?=\n?\[\d\d-\d\dT)', body):
-        if cur and len((cur + entry).encode('utf-8')) > limit:
+def parts(head, lines, chunk_kb):
+    """Pack whole entries into parts of at most chunk_kb; each part repeats the header."""
+    out, cur, size, limit = [], [], 0, chunk_kb * 1024
+    for entry in lines:
+        n = len(entry.encode('utf-8'))
+        if cur and size + n > limit:
             out.append(cur)
-            cur = ''
-        cur += entry
+            cur, size = [], 0
+        cur.append(entry)
+        size += n
     out.append(cur)
-    return [head + p for p in out]
+    return [head + ''.join(p) for p in out]
 
 
 def write_parts(out_dir, name, chunks):
@@ -94,38 +103,64 @@ def write_parts(out_dir, name, chunks):
     return files
 
 
-def reviews(main_path, first, last):
-    """Security-review sub-sessions of the same project that ran inside the session's time window."""
-    proj = os.path.basename(os.path.dirname(main_path))
-    root = os.path.dirname(os.path.dirname(main_path))
+def balance(files, n):
+    """Largest first into the lightest list: lists end up within one part's size of each other."""
+    lists, sizes = [[] for _ in range(n)], [0] * n
+    for f in sorted(files, key=os.path.getsize, reverse=True):
+        i = sizes.index(min(sizes))
+        lists[i].append(f)
+        sizes[i] += os.path.getsize(f)
+    return [l for l in lists if l]
+
+
+def review_session(f):
+    """(first timestamp, cwd, pass, findings) of a security-review sub-session, or None for any other session."""
+    first = cwd = kind = None
+    findings = []
+    for raw in open(f, encoding='utf-8', errors='replace'):
+        try:
+            d = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        c = (d.get('message') or {}).get('content')
+        if kind is None and d.get('type') == 'user':
+            t = text(c)
+            if not t.startswith(REVIEW_PREFIXES):
+                return None
+            first, cwd, kind = d.get('timestamp') or '', os.path.normcase(d.get('cwd') or ''), 1 + t.startswith(REVIEW_PREFIXES[1])
+        if d.get('type') == 'assistant' and isinstance(c, list):
+            for b in c:
+                if isinstance(b, dict) and b.get('type') == 'tool_use' and b.get('name') == 'StructuredOutput':
+                    inp = b.get('input') or {}
+                    findings = inp.get('survived', inp.get('findings')) or []   # pass 2 keeps only survivors
+    return (first, cwd, kind, findings) if kind else None
+
+
+def reviews(root, cwds, first, last):
+    """Pass-1 reviews run from the session's own checkouts inside its time window, each with the findings that
+    survived: a pass-2 sub-session in the same checkout replaces the findings of the pass 1 before it."""
+    found = sorted((r for f in glob.glob(os.path.join(root, '*', '*.jsonl')) if (r := review_session(f))), key=lambda r: r[0] or '')
     rows = []
-    for f in glob.glob(os.path.join(root, proj + '*', '*.jsonl')):
-        fu = findings = None
-        for raw in open(f, encoding='utf-8', errors='replace'):
-            try:
-                d = json.loads(raw)
-            except ValueError:
-                continue
-            if not isinstance(d, dict):
-                continue
-            c = (d.get('message') or {}).get('content')
-            if fu is None and d.get('type') == 'user':
-                fu = (d.get('timestamp') or '', text(c) if isinstance(c, str) else '')
-            if d.get('type') == 'assistant' and isinstance(c, list):
-                for b in c:
-                    if isinstance(b, dict) and b.get('type') == 'tool_use' and b.get('name') == 'StructuredOutput':
-                        findings = (b.get('input') or {}).get('findings')
-        if fu and fu[1].startswith(REVIEW_PREFIXES) and first <= fu[0] <= last:
-            rows.append((fu[0], f, findings or []))
-    return sorted(rows)
+    for ts, cwd, kind, fs in found:
+        if cwd not in cwds or not first <= ts <= last:
+            continue
+        if kind == 1:
+            rows.append([ts, cwd, fs])
+        else:
+            prior = [r for r in rows if r[1] == cwd]
+            if prior:
+                prior[-1][2] = fs
+    return rows
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('session', metavar='ID8')
     ap.add_argument('--out')
-    ap.add_argument('--chunk-kb', type=int, default=200)
-    ap.add_argument('--batches', type=int, default=5)
+    ap.add_argument('--chunk-kb', type=int, default=200, help='size of one part')
+    ap.add_argument('--batch-kb', type=int, default=600, help='size of one batch list, about one analyst\'s reading')
     ap.add_argument('--roots', nargs='+', help='transcript roots (default: both sides of this machine)')
     a = ap.parse_args(argv)
     utf8_safe_stdout()
@@ -134,31 +169,31 @@ def main(argv=None):
         sys.exit(f'{len(hits)} transcripts match {a.session}')
     (sid, path), = hits.items()
     out = a.out or os.path.join(LEDGER, f'full-{sid[:8]}')
-    head, body, first, last = condense(path)
-    main_files = write_parts(out, 'main', parts(head, body, a.chunk_kb))
-    sub_files = []
+    for stale in glob.glob(os.path.join(out, 'main.*.txt')) + glob.glob(os.path.join(out, 'batch*.lst')):
+        os.remove(stale)
+    shutil.rmtree(os.path.join(out, 'sub'), ignore_errors=True)
+    head, lines, first, last, cwds = condense(path)
+    main_files = write_parts(out, 'main', parts(head, lines, a.chunk_kb))
+    sub_files, names = [], []
     for f in sorted(glob.glob(os.path.join(path[:-6], 'subagents', '*.jsonl'))):
-        h, b, _, _ = condense(f)
-        sub_files += write_parts(os.path.join(out, 'sub'), os.path.basename(f)[:-6], parts(h, b, a.chunk_kb))
-    # Largest first into the lightest batch: batches end up within one part's size of each other.
-    batches, sizes = [[] for _ in range(max(1, a.batches))], [0] * max(1, a.batches)
-    for f in sorted(sub_files, key=os.path.getsize, reverse=True):
-        i = sizes.index(min(sizes))
-        batches[i].append(f)
-        sizes[i] += os.path.getsize(f)
-    batches = [b for b in batches if b]
+        h, l, _, _, c = condense(f)
+        cwds |= c
+        names.append(os.path.basename(f)[:-6])
+        sub_files += write_parts(os.path.join(out, 'sub'), names[-1], parts(h, l, a.chunk_kb))
+    total_kb = sum(os.path.getsize(f) for f in sub_files) / 1024
+    batches = balance(sub_files, max(1, math.ceil(total_kb / a.batch_kb))) if sub_files else []
     for i, b in enumerate(batches, 1):
         with open(os.path.join(out, f'batch{i}.lst'), 'w', encoding='utf-8', newline='\n') as w:
             w.write('\n'.join(b) + '\n')
-    rv = reviews(path, first, last)
+    rv = reviews(os.path.dirname(os.path.dirname(path)), cwds, first, last)
     with open(os.path.join(out, 'reviews.txt'), 'w', encoding='utf-8', newline='\n') as w:
-        w.write(f'{len(rv)} security-review sub-sessions, {sum(1 for r in rv if r[2])} with findings\n')
-        for ts, f, fs in rv:
+        w.write(f'{len(rv)} security reviews, {sum(1 for r in rv if r[2])} with surviving findings\n')
+        for ts, cwd, fs in rv:
             if fs:
-                w.write(f'{ts} {f}: {json.dumps(fs, ensure_ascii=False)[:600]}\n')
-    print(f'# {path}\n# {first} .. {last}')
-    print(f'main parts={len(main_files)} subagents={len(set(os.path.basename(f).rsplit(".", 2)[0] for f in sub_files))} '
-          f'sub parts={len(sub_files)} batches={len(batches)} reviews={len(rv)}')
+                w.write(f'{ts} {cwd}: {json.dumps(fs, ensure_ascii=False)[:600]}\n')
+    print(f'# {path}\n# {first} .. {last} (UTC)')
+    print(f'main parts={len(main_files)} subagents={len(names)} sub parts={len(sub_files)} '
+          f'batches={len(batches)} reviews={len(rv)}')
     print(f'out={out}')
 
 
