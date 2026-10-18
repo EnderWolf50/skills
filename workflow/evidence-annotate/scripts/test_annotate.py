@@ -182,5 +182,40 @@ def test_load_masks_resolves_templates_next_to_the_masks_file(tmp_path):
     assert space == (10, 10) and masks[0][1] == 0.8 and masks[0][0].shape == (4, 4)
 
 
+def test_space_is_cast_to_two_ints_and_rejects_anything_else():
+    assert a.parse_space({"space": [1280.0, "720"]}, "x") == (1280, 720)
+    for bad in ({}, {"space": [1280]}, {"space": ["a;b", 720]}, {"space": [0, 720]}, {"space": [1280, -1]}, {"space": 5}):
+        with pytest.raises(SystemExit):
+            a.parse_space(bad, "x")
+
+
+def test_load_masks_rejects_empty_boxes_and_a_text_space(tmp_path):
+    import cv2
+    cv2.imwrite(str(tmp_path / "t.png"), np.zeros((4, 4), np.uint8))
+
+    def masks(space, box):
+        (tmp_path / "m.json").write_text(json.dumps({"space": space, "masks": [{"template": "t.png", "boxes": [box]}]}))
+        return a.load_masks(tmp_path / "m.json")
+
+    for box in ([0, 0, 0, 5], [0, 0, 5, -1], [0, 0, 5]):
+        with pytest.raises(SystemExit, match="above 0|x,y,w,h"):
+            masks([10, 10], box)
+    with pytest.raises(SystemExit):
+        masks(["1280,scale=1:1;", 720], [0, 0, 1, 1])
+    assert masks([10, 10], [-5, -5, 20, 20])[1] == (10, 10)  # out-of-frame boxes stay legal: they are clamped
+
+
+def test_clip_bounds_refuses_a_cut_before_start():
+    start = a.hms("14:30:00")
+    assert a.clip_bounds(start, None, None, 60.0) == (0.0, 60.0)
+    ss, dur = a.clip_bounds(start, "14:30:10", "14:30:25", 60.0)
+    assert (ss, dur) == (pytest.approx(10), pytest.approx(15))
+    assert a.clip_bounds(start, "14:30:10", None, 60.0)[1] == pytest.approx(50)
+    with pytest.raises(SystemExit, match="before --start"):
+        a.clip_bounds(start, "14:29:50", "14:30:25", 60.0)  # would shift every annotation by 10 s
+    with pytest.raises(SystemExit, match="empty"):
+        a.clip_bounds(start, "14:30:20", "14:30:10", 60.0)
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main(["-q", __file__]))

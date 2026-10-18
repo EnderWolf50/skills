@@ -163,8 +163,22 @@ def load_masks(path):
         tpl = cv2.imread(str(p.parent / m["template"]), cv2.IMREAD_GRAYSCALE)
         if tpl is None:
             sys.exit(f"mask template {m['template']} not readable")
+        for b in m["boxes"]:
+            if len(b) != 4 or b[2] <= 0 or b[3] <= 0:
+                sys.exit(f"mask {m['template']}: box must be [x,y,w,h] with w and h above 0, got {b}")
         out.append((tpl, m.get("threshold", 0.8), m["boxes"]))
-    return out, tuple(doc["space"])
+    return out, parse_space(doc, "masks")
+
+
+def parse_space(doc, what):
+    """doc["space"] as two positive ints (it is interpolated into an ffmpeg -vf, so it must be numbers)."""
+    try:
+        w, h = (int(v) for v in doc["space"])
+    except (KeyError, TypeError, ValueError):
+        sys.exit(f"{what}: space must be [width, height] as two numbers, got {doc.get('space')!r}")
+    if w <= 0 or h <= 0:
+        sys.exit(f"{what}: space must be above 0, got {[w, h]}")
+    return w, h
 
 
 def matches(gray, tpl, threshold):
@@ -407,9 +421,21 @@ def frame_indices(times, start, ss, fps, nframes):
     return out
 
 
+def clip_bounds(start, frm, to, total):
+    """(ss, dur): seconds into the video where the cut starts, and its length. --from/--to are wall times.
+    Exits when --from precedes --start (ffmpeg would decode from 0 and shift every annotation by the gap)."""
+    ss = hms(frm) - start if frm else 0.0
+    if ss < 0:
+        sys.exit(f"--from {frm} is {-ss:.1f} s before --start {fmt(start)}: the video has nothing there")
+    dur = (hms(to) - start - ss) if to else total - ss
+    if dur <= 0:
+        sys.exit(f"the cut is empty: --from/--to give {dur:.1f} s (video length {total:.1f} s)")
+    return ss, dur
+
+
 def render(args):
     doc = json.loads(Path(args.events).read_text(encoding="utf-8"))
-    space = tuple(doc["space"])
+    space = parse_space(doc, "events")
     gs = shift(gestures(doc["events"]), args.offset)
     steps = load_steps(args.steps) if args.steps else []
     masks, mspace = load_masks(args.masks) if args.masks else ([], space)
@@ -421,8 +447,7 @@ def render(args):
     W, H = st["width"], st["height"]
     num, den = map(int, st["r_frame_rate"].split("/"))
     fps = num / den
-    ss = hms(getattr(args, "from")) - start if getattr(args, "from") else 0.0
-    dur = (hms(args.to) - start - ss) if args.to else float(probe["format"]["duration"]) - ss
+    ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
     print(f"[annotate] {len(gs)} gestures, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font))
