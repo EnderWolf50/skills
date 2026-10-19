@@ -1,19 +1,18 @@
 ---
 name: retro.patch
-description: "Patch for retro: check findings against the retro ledger and record them there."
+description: "Patch for retro: find sessions on either side of WSL, two more categories, delegation picks, and the retro ledger."
 disable-model-invocation: true
 user-invocable: false
 ---
 
-When running `retro`, the retro ledger (location, format and scripts in `~/.agents/skills/retro-all/SKILL.md`, "Ledger") carries findings across sessions:
+When running `retro` (scripts in `~/.agents/skills/retro-all/scripts/`; the ledger and delegation picks are defined in `~/.agents/skills/retro-all/SKILL.md`):
 
-- **Scope.** A retro over more than one project, or over all recent sessions, follows `~/.agents/skills/retro-all/SKILL.md` instead of these steps.
-- **Finding the session.** A session the user names by id may live on the other side of a Windows + WSL machine: `user-msgs.py <session-id8>` searches both sides and prints its transcript path and user messages; `digest.py --session <session-id8> --all --out <dir>` digests it. A T3 thread id instead: `t3_thread_read` gives the thread's project, its first and last activity and its parent; the session is the transcript under that project's folder whose first and last timestamps span the same range. A fork's transcript starts with its parent's history, so for a fork match its first timestamp against the parent thread's first activity. Done: the transcript path is known.
-- **Complete history.** When the user asks for the session with its subagents, `condense.py <session-id8> --out <dir>` writes the session and every subagent as readable parts, spreads the subagent parts over batch lists, and counts the security reviews run from the session's checkouts and the findings that survived. Dispatch one `retro-analyst` per main part and per batch, each with `~/.agents/skills/retro-all/references/brief-full.md` filled in. Done: every part and every batch is covered by a returned report.
-- **Two habitual candidates**, weighed beside the retro's own categories for every costly pattern:
-  - **Script**: work the agent typed by hand twice or more, or rebuilt by copying an earlier script, becomes a script (py, js, ps1 or sh) or a small CLI in the repo that owns it; pair it with a skill only when an agent also needs to know when to reach for it.
-  - **Back to docs**: a fact the agent paid for (a search, a failed try, a question to the user) goes where the next agent looks, in the repo's own conventions: its docs, an ADR, the glossary, a config file, a code comment, an AGENTS.md pointer; memory only for a fact that belongs to no repo.
-  Done: each repeated sequence and each costly fact is presented as one of these, or the presentation says why neither fits.
-- **Who runs it.** Each candidate that hands work to an agent carries a pick per "Delegation picks" in `~/.agents/skills/retro-all/SKILL.md`. Done: every delegating candidate carries its pick.
-- **Before analysing**, run `ledger.py index` and read `findings.md` plus the files of its live findings. A candidate matching a known finding is presented as a **recurrence** of `F-<n>` with the new evidence; a recurrence of a `fixed` finding means the fix failed only when the session started after its `fixed-at` (a session keeps the steering it loaded at start).
-- **After presenting** and the user deciding each candidate, create each new one with `ledger.py new <category> "<title>"` and fill in the file it prints, edit the recurred ones, run `ledger.py index`, then record the session with `digest.py --session <session-id8> --out <dir>` followed by `digest.py --mark <dir>`. Done: every candidate presented has a file, and the session has one row in `sessions.tsv`.
+- **Scope.** A retro over more than one project, or over all recent sessions, follows `retro-all` instead.
+- **Finding the session** (step 2). A session id may live on the other side of Windows + WSL: `user-msgs.py <session-id8>` searches both and prints its transcript path, and `digest.py --session <session-id8> --all --out <dir>` digests it. For a T3 thread id, `t3_thread_read` gives its project, first and last activity, and parent; the session is the transcript in that project whose timestamps span the same range (a fork's transcript starts with its parent's history, so match its first timestamp against the parent's). Done: the transcript path is known.
+- **Ledger first.** Run `ledger.py index` and read `findings.md` plus its live findings. A candidate matching one is a **recurrence** of `F-<n>` with the new evidence; a recurrence of a `fixed` finding means the fix failed only when the session started after its `fixed-at`.
+- **With subagents**, when the user asks: `condense.py <session-id8> --out <dir>` splits the session and its subagents into parts and batches; dispatch one `retro-analyst` per main part and per batch, each with `~/.agents/skills/retro-all/references/brief-full.md` filled in. Done: every part and batch has a returned report.
+- **Two more categories** for step 3:
+  - **Script**: did the agent type the same work by hand twice, or rebuild it from an earlier script? Make it a script or small CLI in the repo that owns it, plus a skill only when an agent must know when to reach for it. _Use when_ a sequence repeated.
+  - **Back to docs**: did the agent pay for a fact (a search, a failed try, a question to the user)? Put it where the next agent looks, in the repo's conventions (docs, ADR, glossary, config, code comment, AGENTS.md pointer); memory only for a fact that belongs to no repo. _Use when_ a fact cost turns.
+- **Who runs it.** Each candidate that hands work to an agent carries a pick per **Delegation picks**.
+- **After the user decides**, `ledger.py new <category> "<title>"` for each new candidate and fill in the file it prints, edit the recurred ones, run `ledger.py index`, then `digest.py --session <session-id8> --out <dir>` and `digest.py --mark <dir>`. Done: every presented candidate has a ledger file, each delegating one carries its pick, and the session has one row in `sessions.tsv`.

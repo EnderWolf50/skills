@@ -7,9 +7,9 @@ user-invocable: false
 
 When running `grilling` (also through `grill-me` and `grill-with-docs`):
 
-- **Research first.** Before putting a question with choices to the user, research how comparable products or libraries handle it (a subagent, per the fact-finding rule). Each option then carries one line of pros and cons and one line on which comparable products take it.
-- **Reference first.** When a comparable product already has the full feature, it is option A, with its cost; a simpler recommendation says why it beats matching that product.
-- **Concrete options.** Each option carries one example from the product itself, with real names and numbers, and the line "if you pick nothing: …". Say what the user sees before naming a mechanism (preset slots, a cache).
-- **Screen facts from the screen.** A choice that depends on what a screen or an output shows waits while you take a capture of it (only that question waits); a number taken from a wiki or another tool says "unverified" in the question.
-  Done for each question: every option has an example, a cost and an "if you pick nothing" line, and a screen-dependent question cites its capture.
-- **Only chosen decisions get written down.** A decision lands in docs, ADRs, the glossary or code only after the user explicitly chose it in their own answer; a recommendation the user has not answered stays out. List every such decision under **Open decisions** at the end of each round and in the final summary. Done: every decision written anywhere traces to an answer from the user.
+- **Research first.** Before a question with choices, a sub-agent finds how comparable products or libraries handle it (finding facts is your job). When one already has the full feature, it is option A; a simpler recommendation says why it beats matching that product.
+- **Concrete options.** Each option carries one line of pros and cons, the comparable products that take it, one example from the product itself with real names and numbers, and "if you pick nothing: …". Say what the user sees before naming a mechanism (preset slots, a cache).
+- **Screen facts from the screen.** A question that depends on what a screen or output shows waits for a capture of it; a number from a wiki or another tool is marked "unverified".
+- **Only chosen decisions get written down.** A decision lands in docs, ADRs, the glossary or code only after the user chose it in their own answer. List every unanswered recommendation under **Open decisions** at the end of each round and in the final summary.
+
+Done for each round: every option has all four parts, a screen-dependent question cites its capture, and every decision written anywhere traces to an answer from the user.
