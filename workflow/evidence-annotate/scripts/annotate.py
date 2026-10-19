@@ -25,6 +25,8 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import cv2
 import numpy as np
@@ -411,11 +413,12 @@ class Painter:
         mask = Image.new("L", size)
         ImageDraw.Draw(mask).polygon([(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts], fill=255)
         m = np.asarray(mask)
+        outside = cv2.distanceTransform(255 - m, cv2.DIST_L2, 5)  # pixels to the shape, 0 inside
+        inside = cv2.distanceTransform(m, cv2.DIST_L2, 5)  # pixels to the edge, 0 outside
 
-        def grow(w):  # mask grown (w > 0) or shrunk by w units, round corners
-            r = max(1, round(abs(w) * u))
-            disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
-            return Image.fromarray((cv2.dilate if w > 0 else cv2.erode)(m, disc))
+        def grow(w):  # mask grown (w > 0) or shrunk by w units: round corners, one-pixel soft edge
+            d = w * u - outside if w > 0 else inside + w * u
+            return Image.fromarray((np.clip(d + 0.5, 0, 1) * 255).astype(np.uint8))
 
         im = Image.new("RGBA", size)
         if kind == "cua":  # Cua's soft glow strokes, then the body with a white stroke centred on its edge
@@ -586,10 +589,50 @@ def zoom_frame(frame, region, space):
 # ---------------------------------------------------------------- render
 
 def encoder_args():
-    """NVENC when a one-frame probe encode works (the -encoders list only says it was compiled in), else libx264."""
+    """HEVC on the GPU when a one-frame probe encode works (the -encoders list only says it was compiled in),
+    else libx264. cq 24 / crf 20 keep small UI text sharp at the source's own size."""
     ok = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
-                         "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
-    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "27"] if ok else ["-c:v", "libx264", "-crf", "23"]
+                         "-c:v", "hevc_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
+    return ["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "24", "-tag:v", "hvc1"] if ok else ["-c:v", "libx264", "-crf", "20"]
+
+
+def read_frames(pipe, size):
+    """Frames of `size` bytes from a pipe, read ahead on a thread so decoding overlaps drawing."""
+    q = Queue(maxsize=8)
+
+    def run():
+        while (buf := pipe.read(size)) and len(buf) == size:
+            q.put(buf)
+        q.put(None)
+
+    Thread(target=run, daemon=True).start()
+    return iter(q.get, None)
+
+
+class FrameWriter:
+    """Writes frames to a pipe on a thread so encoding overlaps drawing; a dead encoder is reported by close()."""
+
+    def __init__(self, pipe):
+        self.pipe, self.q, self.error = pipe, Queue(maxsize=8), None
+        self.thread = Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while (b := self.q.get()) is not None:
+            if self.error is None:
+                try:
+                    self.pipe.write(b)
+                except OSError as e:  # keep draining so put() never blocks forever
+                    self.error = e
+        self.pipe.close()
+
+    def write(self, b):
+        self.q.put(b)
+
+    def close(self):
+        self.q.put(None)
+        self.thread.join()
+        return self.error
 
 
 def frame_indices(times, start, ss, fps, nframes):
@@ -643,11 +686,13 @@ def render(args):
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
-    enc = None if args.no_video else subprocess.Popen(
+    enc = None if args.no_video else subprocess.Popen(  # the crop keeps both sides even, as 4:2:0 needs
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", f"{num}/{den}",
-         "-i", "-", *encoder_args(), "-pix_fmt", "yuv420p", "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
+         "-i", "-", "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *encoder_args(), "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
     n, size, gi = 0, W * H * 3, 0
-    while (buf := dec.stdout.read(size)) and len(buf) == size:
+    out = FrameWriter(enc.stdin) if enc else None
+    for buf in read_frames(dec.stdout, size):
         tv = n / fps  # clip time
         t = start + ss + tv  # wall time
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
@@ -684,13 +729,13 @@ def render(args):
             png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t, 3).replace(':', '')}.png")
             Image.fromarray(frame).save(png)
             print(f"[annotate] frame {png}", flush=True)
-        if enc:
-            enc.stdin.write(frame.tobytes())
+        if out:
+            out.write(frame.tobytes())
         n += 1
         if n % 1800 == 0:
             print(f"[annotate] {n} frames ({tv:.0f}s)", flush=True)
-    if enc:
-        enc.stdin.close()
+    if out:
+        out.close()
         enc.wait()
     dec.wait()
     if n == 0 or dec.returncode or (enc and enc.returncode):

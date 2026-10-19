@@ -2,7 +2,7 @@
 # requires-python = ">=3.10"
 # dependencies = []
 # ///
-"""Record one window with ffmpeg (Windows Graphics Capture, 720p30) to MKV, remuxed to MP4 on stop.
+"""Record one window with ffmpeg (Windows Graphics Capture, native size at 30 fps, HEVC) to MKV, remuxed to MP4 on stop.
 
 uv run screenrec.py start --window TITLE_SUBSTRING --out DIR [--profile NAME] [--crop-top N]
 uv run screenrec.py stop   [--profile NAME]
@@ -27,7 +27,6 @@ from ctypes import wintypes
 from datetime import datetime
 from pathlib import Path
 
-H = 720  # output height; width follows the window, rounded even
 FPS = 30
 PREFIX = "rec_"  # every file this script writes in --out starts with this
 FFMPEG_IMAGE = "ffmpeg.exe"
@@ -83,25 +82,39 @@ def capture_chain(hwnd, crop_top, t0_us=None, cursor=False):
     return f"gfxcapture=hwnd={hwnd}:capture_cursor={str(cursor).lower()}:max_framerate={FPS}:crop_top={crop_top}{shift},hwdownload,format=bgra"
 
 
-def out_size(w, crop_top):
-    """(out_w, out_h): the window minus the crop scaled to H, even width. Exits when the crop eats the window."""
+def out_size(w, crop_top, height=0):
+    """(out_w, out_h): the window minus the crop, scaled to `height` (0 = its own height), both even.
+    Exits when the crop eats the window."""
     bh = w["h"] - crop_top
     if bh <= 0:
         sys.exit(f"--crop-top {crop_top} leaves nothing of a {w['h']}px-high window")
-    return round(w["w"] * H / bh / 2) * 2, H
+    if not height or height >= bh:  # never upscale
+        return w["w"] // 2 * 2, bh // 2 * 2
+    return round(w["w"] * height / bh / 2) * 2, height // 2 * 2
+
+
+def size_filter(w, crop_top, ow, oh):
+    """Native size: crop the odd pixel off, no resampling; otherwise scale."""
+    if (ow, oh) == (w["w"] // 2 * 2, (w["h"] - crop_top) // 2 * 2):
+        return f"crop={ow}:{oh}:0:0"
+    return f"scale={ow}:{oh}:flags=lanczos"
 
 
 # ---------------------------------------------------------------- encoder, disk
 
 def nvenc_ok():
-    """True when a one-frame h264_nvenc encode works (the -encoders list only says it was compiled in)."""
+    """True when a one-frame hevc_nvenc encode works (the -encoders list only says it was compiled in)."""
     r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
-                        "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True)
+                        "-c:v", "hevc_nvenc", "-f", "null", "-"], capture_output=True)
     return r.returncode == 0
 
 
 def encoder_args(choice="auto"):
-    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "27"] if choice == "nvenc" or (choice == "auto" and nvenc_ok()) else ["-c:v", "libx264", "-preset", "veryfast", "-crf", "23"]
+    """A near-transparent intermediate (evidence-annotate re-encodes it): HEVC on the GPU, else x264 (x265 is
+    too slow to record live). cq 20 measured about 6 GB an hour on a 2489x1460 game battle; a desktop far less."""
+    if choice == "nvenc" or (choice == "auto" and nvenc_ok()):
+        return ["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "20"]
+    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18"]
 
 
 def prune(out_dir, keep_gb):
@@ -243,7 +256,7 @@ def start(a):
         if prior and prior.exists() and running(load(prior)):
             sys.exit(f"profile {a.profile!r} is already recording ({prior}): run `stop --profile {a.profile}`")
     win = pick_window(find_windows(a.window), a.window)
-    ow, oh = out_size(win, a.crop_top)
+    ow, oh = out_size(win, a.crop_top, a.height)
     prune(out, a.keep_gb)
     free = shutil.disk_usage(out).free / 2**30
     if free < a.min_free_gb:
@@ -254,7 +267,7 @@ def start(a):
     mkv = out / f"{PREFIX}{a.profile}_{started:%Y%m%d_%H%M%S}.mkv"
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
            # start_time=0 repeats the first frame back to `started`, so video time = wall time - started
-           f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},scale={ow}:{oh},fps={FPS}:start_time=0,format=yuv420p",
+           f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},{size_filter(win, a.crop_top, ow, oh)},fps={FPS}:start_time=0,format=yuv420p",
            *encoder_args(a.encoder), str(mkv)]
     save(sp, {"cmd": cmd, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
               "window": win["title"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
@@ -331,7 +344,8 @@ def stop(a):
         pointer(a.profile).unlink(missing_ok=True)
         sys.exit(f"no recording written ({mkv}); the stale state was removed")
     mp4 = mkv.with_suffix(".mp4")
-    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(mkv), "-c", "copy", "-movflags", "+faststart", str(mp4)])
+    tag = ["-tag:v", "hvc1"] if "hevc_nvenc" in st["cmd"] else []  # MKV keeps no tag; Apple players want hvc1
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(mkv), "-c", "copy", *tag, "-movflags", "+faststart", str(mp4)])
     if r.returncode:
         sys.exit(f"remux failed (rc {r.returncode}); the recording is intact at {mkv}")
     mkv.unlink()
@@ -363,6 +377,7 @@ def main(argv=None):
     s.add_argument("--crop-top", type=int, default=0, help="pixels cut from the top of the window (title bar)")
     s.add_argument("--keep-gb", type=float, default=20, help="recordings kept in --out; oldest deleted first")
     s.add_argument("--min-free-gb", type=float, default=30, help="refuse to start below this much free space")
+    s.add_argument("--height", type=int, default=0, help="scale to this height; 0 = the window's own (default)")
     s.add_argument("--cursor", action="store_true", help="record the mouse cursor (desktop and browser runs)")
     s.add_argument("--encoder", choices=["auto", "nvenc", "x264"], default="auto", help="auto = NVENC if a probe encode works")
     s.set_defaults(fn=start)

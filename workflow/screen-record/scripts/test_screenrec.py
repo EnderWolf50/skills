@@ -36,9 +36,13 @@ def test_pick_window_refuses_none_and_minimised():
         screenrec.pick_window([{**WIN, "w": 0, "h": 0}], "app")  # minimised windows report an empty client area
 
 
-def test_out_size_scales_to_720_with_even_width_after_crop():
-    assert screenrec.out_size(WIN, 60) == (1920 * 720 // 1080, 720)  # 1920x1080 left -> 1280x720
-    assert screenrec.out_size({**WIN, "w": 1001, "h": 720}, 0)[0] % 2 == 0
+def test_out_size_keeps_the_window_size_unless_asked_and_stays_even():
+    assert screenrec.out_size(WIN, 60) == (1920, 1080)
+    assert screenrec.out_size({**WIN, "w": 1001, "h": 721}, 0) == (1000, 720)
+    assert screenrec.out_size(WIN, 60, 720) == (1280, 720)  # 1920x1080 left -> 1280x720
+    assert screenrec.out_size(WIN, 60, 4000) == (1920, 1080)  # never upscale
+    assert screenrec.size_filter(WIN, 60, 1920, 1080) == "crop=1920:1080:0:0"
+    assert screenrec.size_filter(WIN, 60, 1280, 720).startswith("scale=1280:720")
     with pytest.raises(SystemExit):
         screenrec.out_size(WIN, 1140)
 
@@ -118,7 +122,7 @@ def write_state(path, **kv):
 
 
 def start_args(out, profile="p"):
-    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False)
+    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False, height=0)
 
 
 def stub_start(env, popen):

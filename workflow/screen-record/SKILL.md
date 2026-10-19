@@ -3,12 +3,12 @@ name: screen-record
 description: Windows only. Record one window to MP4 with ffmpeg, for live-test evidence. Use to record a window or a test run, start or stop a recording, or check one is running; the clip then goes to evidence-annotate.
 ---
 
-`scripts/screenrec.py` records one window with ffmpeg's `gfxcapture` source (Windows Graphics Capture: sees GPU-rendered and covered windows; the mouse cursor only with `--cursor`), scaled to 720 px high at 30 fps, encoded with `h264_nvenc` when a probe encode works, else `libx264`. It writes `.mkv` (survives a hard kill); `stop` ends ffmpeg cleanly and remuxes to `.mp4` with `-c copy`. Needs ffmpeg 8+ on PATH (`ffmpeg -h filter=gfxcapture` prints the filter). `uv run` needs no packages.
+`scripts/screenrec.py` records one window with ffmpeg's `gfxcapture` source (Windows Graphics Capture: sees GPU-rendered and covered windows; the mouse cursor only with `--cursor`), at the window's own size (`--height N` scales down) and 30 fps, encoded as HEVC with `hevc_nvenc` (cq 20, a near-transparent intermediate: about 6 GB an hour for a 1460p game battle, far less for a desktop) when a probe encode works, else `libx264` (crf 18). It writes `.mkv` (survives a hard kill); `stop` ends ffmpeg cleanly and remuxes to `.mp4` with `-c copy`. Needs ffmpeg 8+ on PATH (`ffmpeg -h filter=gfxcapture` prints the filter). `uv run` needs no packages.
 
 `<skill>` is this skill's folder; run the commands from anywhere.
 
 ```
-uv run <skill>/scripts/screenrec.py start --window <title substring> --out <dir> [--profile <name>] [--crop-top N] [--keep-gb 20] [--min-free-gb 30] [--cursor] [--encoder auto|nvenc|x264]
+uv run <skill>/scripts/screenrec.py start --window <title substring> --out <dir> [--profile <name>] [--crop-top N] [--height N] [--keep-gb 20] [--min-free-gb 30] [--cursor] [--encoder auto|nvenc|x264]
 uv run <skill>/scripts/screenrec.py status [--profile <name>]
 uv run <skill>/scripts/screenrec.py stop   [--profile <name>]
 ```
