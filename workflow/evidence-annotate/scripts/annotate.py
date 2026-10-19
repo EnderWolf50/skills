@@ -9,7 +9,7 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
     [--font FILE] [--no-video]
 
 --start   wall time of the first video frame; every other time (events, steps, --from, --to, --frames) is wall time
---events  {"space":[w,h],"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}]}; coordinates in
+--events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}]}; coordinates in
           `space`, mapped to the frame by its own size. swipe runs x,y -> x2,y2 over ms; down/up bracket a press
           (up may carry x,y = the release point)
 --steps   [{"from","to","title","note"?,"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
@@ -21,6 +21,7 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -29,17 +30,55 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+import cursor_motion as cm
+
 ACCENT = (255, 196, 64)  # amber: steps, boxes
-TOUCH = (90, 200, 255)  # sky blue: taps, trails
+POINTERS = ("touch", "mouse", "none")
 FONTS = [  # CJK first: Windows, then Linux
     "C:/Windows/Fonts/NotoSansTC-VF.ttf", "C:/Windows/Fonts/msjh.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
 ]
-EMOJI = [("C:/Windows/Fonts/seguiemj.ttf", 64), ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", 109)]
 HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
 ZOOM_S = 0.6  # zoom ease-in / ease-out
+RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
+PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
+PRESS_K = 0.8
+STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
+         "tilt": 1.0}  # events.json "style"; color None = the cursor's own (COLORS)
+CURSORS = ("mac", "cua", "figma")
+COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
+FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
+PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
+
+# pointer outlines in pointer units (3.2 px at 1280 wide), tip at 0,0, and where each tip points at rest
+SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
+          "figma": [(0, 0), (0, 14), (4, 10.5), (10.5, 10.5)]}
+TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-1, -0.75)), "cua": cm.TIP_ANGLE}
+# Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
+# MIT) on its 128-unit canvas, tip at (55, 30), and the glow strokes under it: (width, opacity)
+CUA_PATH = ("M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 "
+            "C88 75 91 72 95 70 C95 70 108 63 108 63 C115 59 114 53 107 50 C107 50 55 30 55 30 Z")
+CUA_GLOW = [(44, 0.02), (36, 0.024), (29, 0.03), (23, 0.038), (18, 0.048), (14, 0.06), (10, 0.075), (7, 0.095)]
+
+
+def svg_points(path, n=12):
+    """Polygon of an SVG path made of M and C commands, each curve sampled n times."""
+    tok = re.findall(r"[MC]|-?[\d.]+", path)
+    pts, i = [], 0
+    while i < len(tok):
+        if tok[i] == "M":
+            pts.append((float(tok[i + 1]), float(tok[i + 2])))
+            i += 3
+        else:  # C x1 y1 x2 y2 x y
+            p0, (c1, c2, p3) = pts[-1], [(float(tok[i + k]), float(tok[i + k + 1])) for k in (1, 3, 5)]
+            for u in (j / n for j in range(1, n + 1)):
+                v = 1 - u
+                pts.append(tuple(v ** 3 * a + 3 * v * v * u * b + 3 * v * u * u * c + u ** 3 * d
+                                 for a, b, c, d in zip(p0, c1, c2, p3)))
+            i += 7
+    return pts
 
 
 # ---------------------------------------------------------------- time
@@ -94,6 +133,78 @@ def gestures(events):
         moved = any(abs(x - x0) > 4 or abs(y - y0) > 4 for _, x, y in g["pts"])
         g["kind"] = "drag" if moved else "hold" if g["t1"] - g["t0"] > HOLD_S else "tap"
     return sorted(out, key=lambda g: g["t0"])
+
+
+def pos_at(g, t):
+    """(x, y) of gesture g at time t in event space: its first point before, its last after, interpolated between."""
+    pts = g["pts"]
+    if t <= pts[0][0]:
+        return pts[0][1:]
+    if t >= pts[-1][0]:
+        return pts[-1][1:]
+    i = next(i for i in range(1, len(pts)) if pts[i][0] >= t)
+    (ta, xa, ya), (tb, xb, yb) = pts[i - 1], pts[i]
+    u = (t - ta) / (tb - ta) if tb > ta else 1
+    return xa + (xb - xa) * u, ya + (yb - ya) * u
+
+
+class Track:
+    """Where a mouse pointer is: at rest on the gestures, gliding between them as Cua Driver moves its cursor
+    (cursor_motion), arriving as each press starts. Glides are planned in 1280-wide frame pixels."""
+
+    def __init__(self, gs, style, to_px):
+        self.gs, self.to_px = gs, to_px  # to_px: event space -> 1280-wide pixels
+        self.glides = []  # (start s, gesture, trajectory, glide end point)
+        for prev, g in zip(gs, gs[1:]):
+            a, b = to_px(*pos_at(prev, prev["t1"])), to_px(*pos_at(g, g["t0"]))
+            gap = g["t0"] - prev["t1"]
+            if gap < 0.02 or np.hypot(b[0] - a[0], b[1] - a[1]) < 1:
+                continue
+            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=style["tilt"], tip_angle=TIPS[style["cursor"]])
+            if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
+                traj = traj.scaled(gap / traj.arrival)
+            self.glides.append((g["t0"] - traj.arrival, g, traj, b))
+
+    def at(self, t):
+        """(x, y, heading, trajectory or None, seconds into it) in 1280-wide pixels."""
+        gl = next((gl for gl in reversed(self.glides) if gl[0] <= t), None)
+        on = next((g for g in reversed(self.gs) if g["t0"] <= t), self.gs[0])
+        if gl and t < gl[1]["t0"]:  # gliding
+            _, x, y, h = gl[2].sample_at(t - gl[0])
+            return x, y, h, gl[2], t - gl[0]
+        x, y = self.to_px(*pos_at(on, t))
+        if gl and gl[1] is on and t - gl[0] <= gl[2].duration():  # arrived: the settle plays around the gesture
+            _, sx, sy, h = gl[2].sample_at(t - gl[0])
+            return x + sx - gl[3][0], y + sy - gl[3][1], h, gl[2], t - gl[0]
+        return x, y, cm.REST_HEADING, None, 0.0
+
+
+def load_style(doc):
+    """events.json "style" over STYLE, checked: cursor one of CURSORS, color #rrggbb (-> RGB tuple)."""
+    st = {**STYLE, **doc.get("style", {})}
+    if unknown := set(st) - set(STYLE):
+        sys.exit(f"events: unknown style keys {sorted(unknown)}; known: {', '.join(STYLE)}")
+    if st["cursor"] not in CURSORS:
+        sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
+    if st["motion"] not in cm.STYLES:
+        sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1)):
+        if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
+            sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
+    c = str(st["color"] or COLORS[st["cursor"]]).lstrip("#")
+    try:
+        st["color"] = tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else None
+    except ValueError:
+        st["color"] = None
+    if st["color"] is None:
+        sys.exit(f"events: style.color must be #rrggbb, got {doc['style']['color']!r}")
+    return st
+
+
+def press_k(gs, t):
+    """Pointer scale at t: PRESS_K while pressed, eased over PRESS_S before the press and after the release."""
+    p = max((min(ease((t - g["t0"] + PRESS_S) / PRESS_S), ease((g["t1"] + PRESS_S - t) / PRESS_S)) for g in gs), default=0)
+    return 1 - (1 - PRESS_K) * p
 
 
 def shift(gs, offset):
@@ -237,8 +348,10 @@ def pick_font(arg):
 
 
 class Painter:
-    def __init__(self, w, h, space, font_path):
+    def __init__(self, w, h, space, font_path, style=None):
         self.w, self.h, self.space = w, h, space
+        self.style = style or load_style({})
+        self.color = self.style["color"]
         self.sx, self.sy, self.s = w / space[0], h / space[1], w / 1280  # s scales sizes, sx/sy scale positions
         s = self.s
 
@@ -252,82 +365,153 @@ class Painter:
 
         self.f_title, self.f_note = font(round(26 * s), 700), font(round(17 * s), 400)
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
-        self.hand = self.hand_shadow = self.tip = None
-        for path, px in EMOJI:
-            if Path(path).exists():
-                self._load_hand(path, px)
-                break
+        self.f_tag = font(round(22 * s), 600)
         self.cache = {}
-
-    def _load_hand(self, path, px):
-        im = Image.new("RGBA", (px + 32, px + 32))
-        ImageDraw.Draw(im).text((8, 4), "\U0001F446", font=ImageFont.truetype(path, px), embedded_color=True)
-        hand = im.crop(im.getbbox())
-        size = round(46 * self.s)
-        hand = hand.resize((size, round(size * hand.height / hand.width)), Image.LANCZOS)
-        a = np.array(hand)[:, :, 3]
-        tip_y = int(np.argmax(a.max(1) > 128))
-        self.tip = (int(np.mean(np.nonzero(a[tip_y] > 128))), tip_y)  # fingertip pixel = touch point
-        shadow = Image.new("RGBA", (hand.width + 16, hand.height + 16))
-        shadow.paste((0, 0, 0, 255), (8, 8), hand)
-        self.hand_shadow, self.hand = shadow.filter(ImageFilter.GaussianBlur(4)), hand
 
     def xy(self, x, y):
         return x * self.sx, y * self.sy
 
     # --- touches
-    def _hand(self, ov, x, y, alpha, press):
-        if self.hand is None:
+    def circle(self, ov, X, Y, r, fill, fill_a, edge, edge_a, edge_w):
+        """Antialiased disc of radius r with a centred edge band edge_w wide, composited onto ov."""
+        R = r + edge_w
+        x0, y0, x1, y1 = max(0, int(X - R) - 1), max(0, int(Y - R) - 1), min(self.w, int(X + R) + 2), min(self.h, int(Y + R) + 2)
+        if x0 >= x1 or y0 >= y1 or r <= 0:
             return
-        k = 0.88 if press else 1.0
-        hand, sh = self.hand, self.hand_shadow
-        if k != 1:
-            hand = hand.resize((round(hand.width * k), round(hand.height * k)), Image.LANCZOS)
-        px, py = round(x - self.tip[0] * k), round(y - self.tip[1] * k + (2 if press else 0))
-        if alpha < 1:
-            hand = hand.copy()
-            hand.putalpha(hand.getchannel("A").point(lambda v: int(v * alpha)))
-        sm = sh.copy()
-        sm.putalpha(sh.getchannel("A").point(lambda v: int(v * 0.45 * alpha)))
-        ov.alpha_composite(sm, (max(0, px - 4), max(0, py + 2)))
-        ov.alpha_composite(hand, (max(0, px), max(0, py)))
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        d = np.hypot(xx + 0.5 - X, yy + 0.5 - Y)
+        ae = edge_a * np.clip(edge_w / 2 - np.abs(d - r) + 0.5, 0, 1)
+        af = fill_a * np.clip(r - d + 0.5, 0, 1) * (1 - ae)
+        a = ae + af
+        rgb = (np.multiply.outer(ae, edge) + np.multiply.outer(af, fill)) / np.maximum(a, 1e-6)[..., None]
+        ov.alpha_composite(Image.fromarray(np.dstack([rgb, a * 255]).round().astype(np.uint8), "RGBA"), (x0, y0))
 
-    def gesture(self, ov, d, g, t):
+    def ring(self, ov, X, Y, age):
+        """Click ring: grows to 100 px (at 1280 wide) with ease-out cubic and fades over RING_S after the press."""
+        p = age / RING_S
+        if 0 <= p <= 1:
+            R, a = 100 * self.s, 0.7 * (1 - p) ** 1.5
+            self.circle(ov, X, Y, R * (1 - (1 - p) ** 3), self.color, 0.3 * a, self.color, a, (0.1 + 0.06 * p) * R * 0.6)
+
+    def sprite(self, k):
+        """Pointer sprite at press scale k, drawn 4x and scaled down, square with the tip at its centre (so it
+        rotates about the tip): (image, half size). Look by style.cursor; cua and figma take style.color."""
+        k = round(k * 25) / 25  # 6 sizes between PRESS_K and 1: each is a 4x draw and blur, so cache few
+        if ("sprite", k) in self.cache:
+            return self.cache[("sprite", k)]
+        kind, rgb = self.style["cursor"], self.color
+        if kind == "cua":  # 128-unit canvas shown 42 pt x FX, tip at (55, 30)
+            u = 42 * FX / 128 * self.s * k * 4
+            pts, tip = svg_points(CUA_PATH), (55, 30)
+        else:
+            u = 3.2 * self.s * k * 4
+            pts, tip = SHAPES[kind], (0, 0)
+        half = round(130 * u) if kind == "cua" else round(30 * u)  # room for the shape, its glow and any rotation
+        size = (2 * half, 2 * half)
+        mask = Image.new("L", size)
+        ImageDraw.Draw(mask).polygon([(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts], fill=255)
+        m = np.asarray(mask)
+
+        def grow(w):  # mask grown (w > 0) or shrunk by w units, round corners
+            r = max(1, round(abs(w) * u))
+            disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+            return Image.fromarray((cv2.dilate if w > 0 else cv2.erode)(m, disc))
+
+        im = Image.new("RGBA", size)
+        if kind == "cua":  # Cua's soft glow strokes, then the body with a white stroke centred on its edge
+            for w, a in CUA_GLOW:
+                layer = Image.new("RGBA", size, rgb)
+                layer.putalpha(grow(w / 2).point(lambda v: int(v * a)))
+                im.alpha_composite(layer)
+            im.paste((255, 255, 255, 255), (0, 0), grow(2.5))
+            im.paste((*rgb, 255), (0, 0), grow(-2.5))
+        else:  # drop shadow, white rim outside the outline, then the fill
+            edge = {"mac": 1.3, "figma": 1.2}[kind]
+            border = grow(edge)
+            shadow = Image.new("RGBA", size, (0, 0, 0))
+            a, blur = {"mac": (0.3, 4), "figma": (0.25, 3)}[kind]
+            shadow.putalpha(border.filter(ImageFilter.GaussianBlur(blur * u / 3.2)).point(lambda v: int(v * a)))
+            im.alpha_composite(shadow, (0, round(u)))
+            im.paste((255, 255, 255, 255), (0, 0), border)
+            im.paste((17, 17, 17, 255) if kind == "mac" else (*rgb, 255), (0, 0), mask)
+        out = (im.resize((size[0] // 4, size[1] // 4), Image.LANCZOS), half // 4)
+        self.cache[("sprite", k)] = out
+        return out
+
+    def tag(self):
+        """Name tag (style.label) in the style colour, or None without a label."""
+        if not self.style["label"]:
+            return None
+        if "tag" not in self.cache:
+            s = self.s
+            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            tw = probe.textlength(self.style["label"], font=self.f_tag)
+            w, h = round(tw + 26 * s), round(35 * s)
+            im = Image.new("RGBA", (w, h))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s), fill=(*self.color, 255))
+            d.text((13 * s, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
+            self.cache["tag"] = im
+        return self.cache["tag"]
+
+    def paste(self, ov, im, x, y):
+        """alpha_composite im at (x, y), clipped to the frame."""
+        x, y = round(x), round(y)
+        box = (max(0, -x), max(0, -y), min(im.width, self.w - x), min(im.height, self.h - y))
+        if box[0] < box[2] and box[1] < box[3]:
+            ov.alpha_composite(im.crop(box), (x + box[0], y + box[1]))
+
+    def track(self, gs):
+        return Track(gs, self.style, lambda x, y: (x * self.sx / self.s, y * self.sy / self.s))
+
+    def radial(self, ov, X, Y, r, rgb, alpha):
+        """Soft disc: alpha at the centre falling linearly to 0 at radius r."""
+        x0, y0, x1, y1 = max(0, int(X - r)), max(0, int(Y - r)), min(self.w, int(X + r) + 1), min(self.h, int(Y + r) + 1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        a = alpha * np.clip(1 - np.hypot(xx + 0.5 - X, yy + 0.5 - Y) / r, 0, 1)
+        ov.alpha_composite(Image.fromarray(np.dstack([np.broadcast_to(rgb, a.shape + (3,)), a * 255]).astype(np.uint8), "RGBA"), (x0, y0))
+
+    def cursor(self, ov, track, gs, t):
+        """The mouse pointer on its track, its speed glow and comet trail (by style.motion), shrinking while
+        pressing; the name tag stays upright beside the tip."""
+        s, fx = self.s, cm.lift(self.color)
+        x, y, heading, traj, lt = track.at(t)
+        if traj and "trail" in traj.effects:
+            layer = Image.new("RGBA", (self.w, self.h))
+            d = ImageDraw.Draw(layer)
+            for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * FX):
+                d.line([(a[0] * s, a[1] * s), (b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * FX * s)), joint="curve")
+            ov.alpha_composite(layer)
+        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX))):
+            gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
+            self.radial(ov, (gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s, g[2] * FX * s, fx, g[3])
+        im, half = self.sprite(press_k(gs, t))
+        rot = heading - cm.REST_HEADING
+        if abs(rot) > 0.005:
+            im = im.rotate(-np.degrees(rot), resample=Image.BICUBIC, center=(half, half))
+        X, Y = x * s, y * s
+        self.paste(ov, im, X - half, Y - half)
+        if tag := self.tag():
+            self.paste(ov, tag, X + 29 * s, Y + 38 * s)
+
+    def gesture(self, ov, d, g, t, pointer):
+        """Rings at the press (and a drag's or hold's release), the drag trail, and for touch a fingertip dot."""
         s = self.s
         t0, t1 = g["t0"], g["t1"]
-        if not (t0 - 0.3 <= t <= t1 + 0.7):
-            return
-        pts = g["pts"]
-        if t <= pts[0][0]:
-            x, y = pts[0][1:]
-        elif t >= pts[-1][0]:
-            x, y = pts[-1][1:]
-        else:
-            i = next(i for i in range(1, len(pts)) if pts[i][0] >= t)
-            (ta, xa, ya), (tb, xb, yb) = pts[i - 1], pts[i]
-            u = (t - ta) / (tb - ta) if tb > ta else 1
-            x, y = xa + (xb - xa) * u, ya + (yb - ya) * u
-        X, Y = self.xy(x, y)
-        held = t0 <= t <= t1
-        fade = min(1, (t - (t0 - 0.3)) / 0.25, (t1 + 0.7 - t) / 0.35)
-        if g["kind"] == "drag":  # fading trail of the last 0.9 s
-            trail = [(pt, *self.xy(px, py)) for pt, px, py in pts if t - 0.9 <= pt <= t] + [(t, X, Y)]
-            for (ta, xa, ya), (tb, xb, yb) in zip(trail, trail[1:]):
-                a = max(0, 1 - (t - tb) / 0.9) * fade
-                d.line([(xa, ya), (xb, yb)], fill=(10, 20, 40, int(120 * a)), width=max(5, round(15 * s * a)))
-                d.line([(xa, ya), (xb, yb)], fill=(*TOUCH, int(240 * a)), width=max(3, round(9 * s * a)))
-            sx, sy = self.xy(*pts[0][1:])
-            r = 7 * s
-            d.ellipse([sx - r, sy - r, sx + r, sy + r], outline=(*TOUCH, int(200 * fade)), width=max(1, round(2 * s)))
-        if held:
-            r = 14 * s * (1 + (0.12 * np.sin((t - t0) * 9) if g["kind"] == "hold" else 0))
-            d.ellipse([X - r, Y - r, X + r, Y + r], fill=(*TOUCH, 110), outline=(255, 255, 255, 230), width=max(2, round(2.5 * s)))
-        for tr, big in ((t0, True), (t1, False)) if g["kind"] != "tap" else ((t0, True),):  # press / release ripples
-            p = (t - tr) / 0.55
-            if 0 <= p <= 1:
-                r = (12 + (48 if big else 28) * p) * s
-                d.ellipse([X - r, Y - r, X + r, Y + r], outline=(*TOUCH, int(230 * (1 - p))), width=max(2, round(4 * s * (1 - p) + 1)))
-        self._hand(ov, X, Y, fade, held or abs(t - t0) < 0.12)
+        X, Y = self.xy(*pos_at(g, t))
+        if g["kind"] == "drag" and self.style["trail"] and t0 <= t <= t1 + 0.5:  # trail from the start to the finger, fading after release
+            a = 1 - max(0, t - t1) / 0.5
+            line = [self.xy(px, py) for pt, px, py in g["pts"] if pt <= t] + [(X, Y)]
+            d.line(line, fill=(*self.color, int(140 * a)), width=max(2, round(12 * s)), joint="curve")
+        self.ring(ov, *self.xy(*pos_at(g, t0)), t - t0)
+        if g["kind"] != "tap":
+            self.ring(ov, X, Y, t - t1)
+        if pointer == "touch":
+            vis = max(0.0, min(1, (t1 + 0.3 - t) / 0.3))  # appears on the press itself: a finger has no hover
+            if t >= t0 and vis > 0:
+                self.circle(ov, X, Y, 28 * s * press_k([g], t), (255, 255, 255), 0.95 * vis, (0, 0, 0), 0.25 * vis, 4 * s)
 
     # --- boxes
     def box(self, d, x, y, w, h, label, alpha):
@@ -437,6 +621,10 @@ def render(args):
     doc = json.loads(Path(args.events).read_text(encoding="utf-8"))
     space = parse_space(doc, "events")
     gs = shift(gestures(doc["events"]), args.offset)
+    pointer = doc.get("pointer", "touch")
+    style = load_style(doc)
+    if pointer not in POINTERS:
+        sys.exit(f"events: pointer must be one of {', '.join(POINTERS)}, got {pointer!r}")
     steps = load_steps(args.steps) if args.steps else []
     masks, mspace = load_masks(args.masks) if args.masks else ([], space)
     start = hms(args.start)
@@ -450,7 +638,8 @@ def render(args):
     ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
     print(f"[annotate] {len(gs)} gestures, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
-    paint = Painter(W, H, space, pick_font(args.font))
+    paint = Painter(W, H, space, pick_font(args.font), style)
+    track = paint.track(gs) if pointer == "mouse" and gs else None
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
@@ -473,8 +662,10 @@ def render(args):
             gi += 1
         j = gi
         while j < len(gs) and gs[j]["t0"] - 0.3 <= t:
-            paint.gesture(ov, d, gs[j], t)
+            paint.gesture(ov, d, gs[j], t, pointer)
             j += 1
+        if track:
+            paint.cursor(ov, track, gs, t)
         blend(frame, ov)
         region = zoom_region(cur[1], t, space) if cur else None
         if region:

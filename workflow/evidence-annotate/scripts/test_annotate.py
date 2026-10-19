@@ -8,6 +8,7 @@ uv run test_annotate.py        (or: uv run --with pytest pytest -q test_annotate
 """
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +16,8 @@ import pytest
 import annotate as a
 
 SPACE = (1280, 720)
+# geometry tests draw no CJK text, so any font will do where no CJK font is installed
+FONT = next((f for f in [*a.FONTS, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"] if Path(f).exists()), None)
 
 
 def ev(t, kind, x=None, y=None, **kw):
@@ -101,7 +104,7 @@ def test_zoom_frame_crops_scales_back_and_clamps_at_the_edges():
 
 
 def test_coordinates_map_by_frame_size_per_axis():
-    p = a.Painter(2560, 720, SPACE, a.pick_font(None))  # x doubled, y unchanged
+    p = a.Painter(2560, 720, SPACE, FONT)  # x doubled, y unchanged
     assert p.xy(640, 360) == (1280, 360)
     assert p.s == pytest.approx(2.0)
 
@@ -219,3 +222,86 @@ def test_clip_bounds_refuses_a_cut_before_start():
 
 if __name__ == "__main__":
     sys.exit(pytest.main(["-q", __file__]))
+
+
+def track(gs, **style):
+    return a.Track(gs, a.load_style({"style": style}), lambda x, y: (x, y))
+
+
+def test_track_rests_then_glides_to_arrive_on_the_next_press():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:05.0", "tap", 500, 300)])
+    tr = track(gs)
+    start, _, traj, _ = tr.glides[0]
+    t1 = gs[1]["t0"]
+    assert start == pytest.approx(t1 - traj.arrival)  # the move ends as the press starts
+    assert tr.at(gs[0]["t0"] - 1)[:2] == (100, 100)  # before the first gesture: waits on it
+    assert tr.at(start - 0.1)[:3] == (100, 100, a.cm.REST_HEADING)  # rests until the glide starts
+    x, y, h, *_ = tr.at(start + traj.arrival / 2)
+    assert 100 < x < 500 and h != a.cm.REST_HEADING  # leans into the move
+    assert tr.at(t1)[:2] == pytest.approx((500, 300), abs=1)
+    assert tr.at(t1 + 9)[:3] == (500, 300, a.cm.REST_HEADING)
+
+
+def test_track_squeezes_a_glide_into_a_short_gap_and_skips_none():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:01.3", "tap", 900, 600)])
+    start, g, traj, _ = track(gs).glides[0]
+    assert traj.arrival == pytest.approx(gs[1]["t0"] - gs[0]["t1"]) and start == pytest.approx(gs[0]["t1"])
+
+
+def test_press_scale_shrinks_before_the_press_and_recovers_after_the_release():
+    g = a.gestures([ev("10:00:01.0", "tap", 1, 1)])
+    t0, t1 = g[0]["t0"], g[0]["t1"]
+    assert a.press_k(g, t0 - a.PRESS_S - 0.01) == 1
+    assert a.press_k(g, t0) == pytest.approx(a.PRESS_K)
+    assert a.press_k(g, t1 + a.PRESS_S + 0.01) == 1
+
+
+def test_ring_shows_only_after_the_press():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    from PIL import Image
+    for age, drawn in ((-0.05, False), (0.1, True), (a.RING_S + 0.05, False)):
+        ov = Image.new("RGBA", (1280, 720))
+        p.ring(ov, 640, 360, age)
+        assert (ov.getbbox() is not None) == drawn, age
+
+
+def test_mouse_pointer_sprite_is_drawn_tip_first_and_clipped_at_the_edge():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    from PIL import Image
+    gs = a.gestures([ev("10:00:01.0", "tap", 1270, 710)])
+    ov = Image.new("RGBA", (1280, 720))
+    p.cursor(ov, p.track(gs), gs, gs[0]["t0"])  # near the corner: must not raise
+    assert ov.getpixel((1271, 713))[3] > 200  # the tip sits on the press
+    x0, y0, _, _ = ov.getbbox()
+    assert x0 >= 1256 and y0 >= 698  # only the shadow's blur reaches past the tip
+
+
+def test_glide_bows_unless_arc_is_zero_and_leans_unless_tilt_is_zero():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 900, 300)])
+    def mid(**style):
+        tr = track(gs, **style)
+        start, _, traj, _ = tr.glides[0]
+        return tr.at(start + traj.arrival / 2)
+    assert abs(mid()[1] - 300) > 30
+    assert mid(arc=0)[1] == pytest.approx(300)
+    assert mid(tilt=0)[2] == a.cm.REST_HEADING
+
+
+def test_style_fills_defaults_and_rejects_bad_values():
+    st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
+    assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
+    assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}):
+        with pytest.raises(SystemExit):
+            a.load_style({"style": bad})
+
+
+@pytest.mark.parametrize("cursor", a.CURSORS)
+def test_every_cursor_draws_its_tip_on_the_point_with_a_label(cursor):
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": cursor, "label": "Claude"}}))
+    gs = a.gestures([ev("10:00:01.0", "tap", 640, 360)])
+    ov = Image.new("RGBA", (1280, 720))
+    p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
+    assert ov.getpixel((643, 366) if cursor != "cua" else (646, 364))[3] > 200  # the pointer covers the press point
+    assert ov.getpixel((640 + 29 + 10, 360 + 38 + 17))[3] > 200  # the tag sits below right of the tip

@@ -1,4 +1,4 @@
-{"space":[1280,720],"events":[
+{"space":[1280,720],"pointer":"mouse","style":{"cursor":"cua","color":"#4785ff","label":"Claude"},"events":[
  {"t":"10:00:03.200","kind":"tap","x":640,"y":360},
  {"t":"10:00:06.000","kind":"swipe","x":300,"y":500,"x2":300,"y2":200,"ms":600},
  {"t":"10:00:09.000","kind":"down","x":900,"y":400},
