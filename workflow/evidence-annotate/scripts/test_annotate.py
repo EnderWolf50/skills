@@ -323,3 +323,23 @@ def test_key_items_make_caps_and_join_close_typing():
 
 def test_gestures_skip_key_events():
     assert len(a.gestures([ev("10:00:01.0", "key", keys="Enter"), ev("10:00:02.0", "tap", 1, 1)])) == 1
+
+
+def test_camera_zooms_in_before_a_burst_pans_away_and_out_after():
+    gs = a.gestures([ev("10:00:02.0", "tap", 200, 200), ev("10:00:03.0", "tap", 220, 210),  # close: no pan
+                     ev("10:00:04.0", "tap", 1100, 600), ev("10:00:20.0", "tap", 640, 360)])
+    cam = a.Camera(gs, [], SPACE, 2.0)
+    assert len(cam.bursts) == 2 and len(cam.bursts[0][2]) == 2  # the 220,210 press stayed in view
+    t = lambda s: a.hms(s)
+    assert cam.region(t("10:00:00.5")) is None
+    x, y, w, h = cam.region(t("10:00:02.0"))
+    assert (w, h) == (640, 360) and x <= 200 <= x + w and y <= 200 <= y + h
+    x, y, w, h = cam.region(t("10:00:04.0"))
+    assert x + w == 1280 and y + h == 720  # panned to the far corner, clamped inside the frame
+    assert cam.region(t("10:00:10.0")) is None  # out between bursts
+
+
+def test_camera_fits_a_long_drag():
+    gs = a.gestures([ev("10:00:02.0", "swipe", 100, 360, x2=1100, y2=360, ms=500)])
+    _, _, w, _ = a.Camera(gs, [], SPACE, 2.5).region(a.hms("10:00:02.3"))
+    assert w >= 1000 * 1.4 - 1 or w == 1280

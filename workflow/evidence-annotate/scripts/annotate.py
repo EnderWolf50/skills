@@ -49,7 +49,7 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
-         "tilt": 1.0}  # events.json "style"; color None = the cursor's own (COLORS)
+         "tilt": 1.0, "zoom": 0}  # events.json "style"; color None = the cursor's own (COLORS); zoom 0 = off
 CURSORS = ("mac", "cua", "figma")
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
@@ -191,7 +191,7 @@ def load_style(doc):
         sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
-    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1)):
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4)):
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
     c = str(st["color"] or COLORS[st["cursor"]]).lstrip("#")
@@ -293,6 +293,58 @@ def fit_region(r, space):
     w, h = min(w, sw), min(h, sh)
     cx, cy = x + r[2] / 2, y + r[3] / 2
     return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
+
+
+CAM_HOLD_S = 1.0  # the camera stays in this long after the last action of a burst
+CAM_GAP_S = CAM_HOLD_S + 2 * ZOOM_S + 0.5  # a quieter gap than this zooms out between bursts
+CAM_PAN_S = 0.6  # pan to the next press, arriving just before it
+CAM_KEEP = 0.6  # a press inside this middle share of the view does not move the camera
+
+
+class Camera:
+    """Auto zoom: eases in to `scale` before each burst of actions, pans to presses that leave the middle of
+    the view, fits a drag's whole path, and eases out CAM_HOLD_S after the burst. Regions in event space."""
+
+    def __init__(self, gs, keys, space, scale):
+        self.space, sw, sh = space, *space
+        acts = sorted([(g["t0"], g["t1"], g) for g in gs] + [(k["t0"], k["t1"], None) for k in keys], key=lambda a: a[0])
+        self.bursts = []  # [start, end, [(t, cx, cy, z), ...]]
+        for t0, t1, g in acts:
+            if not self.bursts or t0 - self.bursts[-1][1] > CAM_GAP_S:
+                self.bursts.append([t0, t1, []])
+            b = self.bursts[-1]
+            b[1] = max(b[1], t1)
+            if g is None:  # typing keeps the view where it is
+                continue
+            xs, ys = [x for _, x, _ in g["pts"]], [y for _, _, y in g["pts"]]
+            bw, bh = max(xs) - min(xs), max(ys) - min(ys)
+            z = min(scale, sw / max(bw * 1.4, 1), sh / max(bh * 1.4, 1))
+            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+            if b[2]:  # stay put while the press is well inside the current view
+                _, px, py, pz = b[2][-1]
+                if abs(cx - px) < sw / pz / 2 * CAM_KEEP and abs(cy - py) < sh / pz / 2 * CAM_KEEP and z >= pz:
+                    continue
+            b[2].append((t0, cx, cy, max(z, 1.0)))
+        self.bursts = [b for b in self.bursts if b[2]]
+
+    def region(self, t):
+        """[x, y, w, h] shown at t, or None at full frame."""
+        for start, end, keys in self.bursts:
+            t_in, t_out = keys[0][0] - 0.1 - ZOOM_S, end + CAM_HOLD_S
+            if t_in <= t <= t_out + ZOOM_S:
+                break
+        else:
+            return None
+        p = ease(min((t - t_in) / ZOOM_S, (t_out + ZOOM_S - t) / ZOOM_S))
+        _, cx, cy, z = keys[0]
+        for (ta, xa, ya, za), (tb, xb, yb, zb) in zip(keys, keys[1:]):
+            u = ease((t - (tb - 0.05 - CAM_PAN_S)) / CAM_PAN_S)
+            if u > 0:
+                cx, cy, z = xa + (xb - xa) * u, ya + (yb - ya) * u, za + (zb - za) * u
+        sw, sh = self.space
+        zf = 1 + (z - 1) * p
+        w, h = sw / zf, sh / zf
+        return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
 def zoom_region(step, t, space):
@@ -755,6 +807,7 @@ def render(args):
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font), style)
     track = paint.track(gs) if pointer == "mouse" and gs else None
+    cam = Camera(gs, keys, space, style["zoom"]) if style["zoom"] > 1 else None
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
@@ -784,7 +837,7 @@ def render(args):
         if track:
             paint.cursor(ov, track, gs, t)
         blend(frame, ov)
-        region = zoom_region(cur[1], t, space) if cur else None
+        region = (zoom_region(cur[1], t, space) if cur else None) or (cam.region(t) if cam else None)
         if region:
             frame = zoom_frame(frame, region, space)
         ov = Image.new("RGBA", (W, H))  # captions stay put
