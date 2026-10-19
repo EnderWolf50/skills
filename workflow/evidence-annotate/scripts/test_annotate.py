@@ -305,3 +305,21 @@ def test_every_cursor_draws_its_tip_on_the_point_with_a_label(cursor):
     p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
     assert ov.getpixel((643, 366) if cursor != "cua" else (646, 364))[3] > 200  # the pointer covers the press point
     assert ov.getpixel((640 + 29 + 10, 360 + 38 + 17))[3] > 200  # the tag sits below right of the tip
+
+
+def test_key_items_make_caps_and_join_close_typing():
+    items = a.key_items([ev("10:00:01.0", "type", text="AB", ms=100), ev("10:00:01.5", "type", text="C"),
+                         ev("10:00:05.0", "key", keys="Ctrl + S"), ev("10:00:09.0", "type", text="Z"),
+                         ev("10:00:00.5", "tap", 1, 1)])
+    assert len(items) == 3  # AB and C joined; the key; Z after a gap
+    assert "".join(ch for _, ch in items[0]["chars"]) == "ABC" and items[0]["chars"][1][0] == pytest.approx(a.hms("10:00:01.05"))
+    assert items[1]["caps"] == ["Ctrl", "S"]
+    item, alpha = a.key_at(items, a.hms("10:00:05.5"))
+    assert item is items[1] and alpha == 1
+    assert a.key_at(items, a.hms("10:00:07.0")) is None
+    with pytest.raises(ValueError):
+        a.key_items([ev("10:00:01.0", "key")])
+
+
+def test_gestures_skip_key_events():
+    assert len(a.gestures([ev("10:00:01.0", "key", keys="Enter"), ev("10:00:02.0", "tap", 1, 1)])) == 1

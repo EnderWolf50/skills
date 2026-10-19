@@ -9,7 +9,8 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
     [--font FILE] [--no-video]
 
 --start   wall time of the first video frame; every other time (events, steps, --from, --to, --frames) is wall time
---events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}]}; coordinates in
+--events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}
+          or {"t","kind":"key","keys":"Ctrl+S"} or {"t","kind":"type","text":"...","ms"?}]}; coordinates in
           `space`, mapped to the frame by its own size. swipe runs x,y -> x2,y2 over ms; down/up bracket a press
           (up may carry x,y = the release point)
 --steps   [{"from","to","title","note"?,"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
@@ -106,7 +107,7 @@ def gestures(events):
 
     ponytail: one contact; a second `down` while one is open closes the first at that time."""
     out, held = [], None
-    for e in sorted(events, key=lambda e: hms(e["t"])):
+    for e in sorted((e for e in events if e["kind"] not in KEYS), key=lambda e: hms(e["t"])):
         t, k = hms(e["t"]), e["kind"]
         need = {"tap": "xy", "swipe": ("x", "y", "x2", "y2"), "down": "xy"}.get(k, ())
         if missing := [f for f in need if f not in e]:
@@ -207,6 +208,45 @@ def press_k(gs, t):
     """Pointer scale at t: PRESS_K while pressed, eased over PRESS_S before the press and after the release."""
     p = max((min(ease((t - g["t0"] + PRESS_S) / PRESS_S), ease((g["t1"] + PRESS_S - t) / PRESS_S)) for g in gs), default=0)
     return 1 - (1 - PRESS_K) * p
+
+
+KEY_HOLD_S = 1.0  # a key pill stays this long after its last key
+TYPE_MS = 45  # a `type` event reveals one character this often unless it gives "ms"
+TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins the same pill
+KEYS = ("key", "type")
+
+
+def key_items(events, offset=0.0):
+    """Key pills from `key` ({"keys": "Ctrl+S"}) and `type` ({"text": "...", "ms"?: total}) events, sorted:
+    {"t0", "t1", "caps": [..]} or {"t0", "t1", "chars": [(t, ch), ...]}. Typing close behind typing joins it."""
+    out = []
+    for e in sorted((e for e in events if e["kind"] in KEYS), key=lambda e: hms(e["t"])):
+        t = hms(e["t"]) + offset
+        if e["kind"] == "key":
+            if not e.get("keys"):
+                raise ValueError(f"key event at {e['t']} lacks keys: {e}")
+            out.append({"t0": t, "t1": t + KEY_HOLD_S, "caps": [k.strip() for k in str(e["keys"]).split("+") if k.strip()]})
+            continue
+        text = str(e.get("text", ""))
+        if not text:
+            raise ValueError(f"type event at {e['t']} lacks text: {e}")
+        step = e.get("ms", TYPE_MS * len(text)) / 1000 / len(text)
+        chars = [(t + i * step, ch) for i, ch in enumerate(text)]
+        prev = next((it for it in reversed(out) if "chars" in it), None)
+        if prev and out[-1] is prev and t <= prev["chars"][-1][0] + TYPE_JOIN_S:
+            prev["chars"] += chars
+            prev["t1"] = chars[-1][0] + KEY_HOLD_S
+        else:
+            out.append({"t0": t, "t1": chars[-1][0] + KEY_HOLD_S, "chars": chars})
+    return out
+
+
+def key_at(items, t):
+    """(item, alpha) of the latest key pill showing at t, fading in over 0.15 s and out over 0.3 s, or None."""
+    for it in reversed(items):
+        if it["t0"] <= t < it["t1"]:
+            return it, max(0.0, min(1, (t - it["t0"]) / 0.15, (it["t1"] - t) / 0.3))
+    return None
 
 
 def shift(gs, offset):
@@ -368,6 +408,7 @@ class Painter:
         self.f_title, self.f_note = font(round(26 * s), 700), font(round(17 * s), 400)
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.f_tag = font(round(22 * s), 600)
+        self.f_key = font(round(22 * s), 600)
         self.cache = {}
 
     def xy(self, x, y):
@@ -558,6 +599,36 @@ class Painter:
         self.cache[key] = im
         return im
 
+    def keys(self, ov, item, t, alpha, bottom):
+        """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
+        s = self.s
+        d = ImageDraw.Draw(ov)
+        pad, h, cap_h, gap = 12 * s, 54 * s, 38 * s, 22 * s
+        if "caps" in item:
+            widths = [d.textlength(c, font=self.f_key) + 28 * s for c in item["caps"]]
+            w = sum(widths) + gap * (len(widths) - 1) + 2 * pad
+        else:
+            text = "".join(ch for ct, ch in item["chars"] if ct <= t)[-32:]  # the tail of a long text
+            w = d.textlength(text, font=self.f_key) + 2 * pad + 14 * s
+        x, y = (self.w - w) / 2, bottom - h
+        d.rounded_rectangle([x, y, x + w, y + h], radius=16 * s, fill=(18, 20, 28, int(220 * alpha)))
+        if "caps" in item:
+            x += pad
+            for i, (c, cw) in enumerate(zip(item["caps"], widths)):
+                cy = y + (h - cap_h) / 2
+                d.rounded_rectangle([x, cy + 3 * s, x + cw, cy + cap_h + 3 * s], radius=8 * s, fill=(170, 176, 190, int(255 * alpha)))
+                d.rounded_rectangle([x, cy, x + cw, cy + cap_h], radius=8 * s, fill=(255, 255, 255, int(255 * alpha)))
+                d.text((x + cw / 2, cy + cap_h / 2), c, font=self.f_key, fill=(20, 22, 28, int(255 * alpha)), anchor="mm")
+                x += cw
+                if i < len(widths) - 1:
+                    d.text((x + gap / 2, y + h / 2), "+", font=self.f_key, fill=(170, 176, 190, int(255 * alpha)), anchor="mm")
+                    x += gap
+        else:
+            d.text((x + pad, y + h / 2), text, font=self.f_key, fill=(255, 255, 255, int(255 * alpha)), anchor="lm")
+            if int(t * 2) % 2 == 0:  # caret blinks at 1 Hz
+                cx = x + pad + d.textlength(text, font=self.f_key) + 3 * s
+                d.rectangle([cx, y + 14 * s, cx + 2 * s, y + h - 14 * s], fill=(255, 255, 255, int(220 * alpha)))
+
     def corner(self, ov, text):
         s = self.s
         d = ImageDraw.Draw(ov)
@@ -664,6 +735,7 @@ def render(args):
     doc = json.loads(Path(args.events).read_text(encoding="utf-8"))
     space = parse_space(doc, "events")
     gs = shift(gestures(doc["events"]), args.offset)
+    keys = key_items(doc["events"], args.offset)
     pointer = doc.get("pointer", "touch")
     style = load_style(doc)
     if pointer not in POINTERS:
@@ -679,7 +751,7 @@ def render(args):
     num, den = map(int, st["r_frame_rate"].split("/"))
     fps = num / den
     ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
-    print(f"[annotate] {len(gs)} gestures, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
+    print(f"[annotate] {len(gs)} gestures, {len(keys)} key pills, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font), style)
     track = paint.track(gs) if pointer == "mouse" and gs else None
@@ -723,6 +795,11 @@ def render(args):
                 pan = pan.copy()
                 pan.putalpha(pan.getchannel("A").point(lambda v: int(v * alpha)))
             ov.alpha_composite(pan, ((W - pan.width) // 2, H - pan.height - round(8 * paint.s)))
+        if k := key_at(keys, t):
+            bottom = H - round(24 * paint.s)
+            if cur:  # sit above the caption panel
+                bottom = H - round(12 * paint.s) - pan.height
+            paint.keys(ov, k[0], t, k[1], bottom)
         paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else ""))
         blend(frame, ov)
         if n in want:
