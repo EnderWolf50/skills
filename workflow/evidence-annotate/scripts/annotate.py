@@ -49,9 +49,11 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
-         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False, "frame": None}  # events.json "style"; color None = the
+         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill"}  # events.json "style"; color None = the
 # cursor's own (COLORS); zoom and idle_fade 0 = off
 CURSORS = ("mac", "cua", "figma")
+CAPTIONS = ("pill", "callout", "chapter")  # bottom-centre capsule, a card beside the step's press, top-left capsule
+ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
@@ -200,6 +202,10 @@ def load_style(doc):
         sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
+    if st["caption"] not in CAPTIONS:
+        sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
+    if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
+        st["zoom"] = ZOOM_DEFAULT if st["zoom"] else 0
     for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4), ("idle_fade", 0, 600)):
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
@@ -286,6 +292,17 @@ def load_steps(path):
         if z and (len(z) != 4 or z[2] <= 0 or z[3] <= 0):
             sys.exit(f"step {s.get('title')!r}: zoom must be [x,y,w,h] with w and h above 0, got {z}")
     return steps
+
+
+def step_anchor(step, gs):
+    """Where a callout points: the first press inside the step, else the centre of its first box, else None."""
+    g = next((g for g in gs if step["from"] <= g["t0"] < step["to"]), None)
+    if g:
+        return pos_at(g, g["t0"])
+    if step.get("boxes"):
+        x, y, w, h, *_ = step["boxes"][0]
+        return x + w / 2, y + h / 2
+    return None
 
 
 def step_at(steps, t):
@@ -480,6 +497,7 @@ class Painter:
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.f_tag = font(round(22 * s), 600)
         self.f_key = font(round(22 * s), 600)
+        self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
         self.view = None  # (x0, y0, kx, ky): the zoom's crop box in frame pixels and its magnification
 
@@ -663,34 +681,94 @@ class Painter:
             d.text((X0 + 7 * s, ly + 11 * s), label, font=self.f_label, fill=(20, 20, 24, int(255 * alpha)), anchor="lm")
 
     # --- caption panel (cached per text, faded by alpha)
-    def panel(self, n, title, note):
-        key = (n, title, note)
-        if key in self.cache:
-            return self.cache[key]
-        s = self.s
-        pad, badge = round(16 * s), round(36 * s)
-        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        note = note or ""
-        while note and probe.textlength(note, font=self.f_note) > 1000 * s:
-            note = note[:-2].rstrip() + "…" if not note.endswith("…") else note[:-2] + "…"
-        tw = max(probe.textlength(title, font=self.f_title), probe.textlength(note, font=self.f_note))
-        w = round(pad * 3 + badge + tw)
-        h = round(pad * 2 + 34 * s + (24 * s if note else 0))
-        im = Image.new("RGBA", (w + 24, h + 24))
-        sh = Image.new("RGBA", im.size)
-        ImageDraw.Draw(sh).rounded_rectangle([12, 16, w + 12, h + 14], radius=round(14 * s), fill=(0, 0, 0, 120))
-        im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(8)))
-        d = ImageDraw.Draw(im)
-        d.rounded_rectangle([12, 12, w + 12, h + 12], radius=round(14 * s), fill=(18, 20, 28, 196), outline=(255, 255, 255, 40), width=1)
-        bx, by = 12 + pad, 12 + pad
-        d.ellipse([bx, by, bx + badge, by + badge], fill=ACCENT)
-        d.text((bx + badge / 2, by + badge / 2), str(n), font=self.f_badge, fill=(24, 22, 18), anchor="mm")
-        tx = bx + badge + pad
-        d.text((tx, by + badge / 2), title, font=self.f_title, fill=(255, 255, 255), anchor="lm")
-        if note:
-            d.text((tx, by + badge + 4 * s), note, font=self.f_note, fill=(205, 214, 228), anchor="lt")
-        self.cache[key] = im
-        return im
+    def capsule(self, n, total, title, note):
+        """The pill / chapter caption: a translucent dark capsule, "n/total", a hairline, the title; the note,
+        when there is one, as a smaller second line."""
+        key = ("capsule", n, total, title, note)
+        if key not in self.cache:
+            s = self.s
+            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            num = f"{n}/{total}"
+            nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
+            note = note or ""
+            while note and probe.textlength(note, font=self.f_note) > 900 * s:
+                note = note[:-2].rstrip() + "…" if not note.endswith("…") else note[:-2] + "…"
+            pad, gap = 32 * s, 16 * s
+            w = round(pad * 2 + nw + gap * 2 + max(tw, probe.textlength(note, font=self.f_note)))
+            h = round((92 if note else 64) * s)
+            im = Image.new("RGBA", (w, h))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(h / 2, 32 * s)), fill=(15, 17, 24, 170))
+            cy = 32 * s
+            d.text((pad, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
+            lx = pad + nw + gap
+            d.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
+            d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
+            if note:
+                d.text((lx + gap, cy + 34 * s), note, font=self.f_note, fill=(205, 214, 228, 230), anchor="lm")
+            self.cache[key] = im
+        return self.cache[key]
+
+    def callout(self, n, title, note):
+        """The callout card: white, soft shadow, "STEP n" in the accent colour over the title (and the note);
+        (image, shadow margin)."""
+        key = ("callout", n, title, note)
+        if key not in self.cache:
+            s = self.s
+            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            pad, m = 28 * s, round(32 * s)
+            w = round(2 * pad + max(probe.textlength(title, font=self.f_cap), probe.textlength(note or "", font=self.f_note)))
+            h = round((112 if note else 84) * s)
+            im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
+            shade = Image.new("L", im.size)
+            ImageDraw.Draw(shade).rounded_rectangle([m, m + 8 * s, m + w, m + h + 8 * s], radius=round(20 * s), fill=255)
+            im.paste((0, 0, 0, 255), (0, 0), shade.filter(ImageFilter.GaussianBlur(14 * s)).point(lambda v: int(v * 0.18)))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle([m, m, m + w, m + h], radius=round(20 * s), fill=(255, 255, 255, 255))
+            d.text((m + pad, m + 30 * s), f"STEP {n}", font=self.f_cap_n, fill=(*self.color, 255), anchor="lm")
+            d.text((m + pad, m + 62 * s), title, font=self.f_cap, fill=(20, 24, 32, 255), anchor="lm")
+            if note:
+                d.text((m + pad, m + 92 * s), note, font=self.f_note, fill=(90, 98, 112, 255), anchor="lm")
+            self.cache[key] = (im, m)
+        return self.cache[key]
+
+    def caption(self, ov, step, n, total, alpha, anchor):
+        """Draw the step caption in style.caption; returns how much of the bottom edge it covers (for the key pill)."""
+        s, kind = self.s, self.style["caption"]
+        if kind == "callout" and anchor:
+            card, m = self.callout(n, step["title"], step.get("note"))
+            X, Y = self.xy(*anchor)
+            w, h = card.width - 2 * m, card.height - 2 * m
+            gap, edge = 40 * s, 16 * s
+            # the pointer and its name tag hang below and right of the tip: try left, above, right, below
+            sides = {"left": (X - gap - w, Y - h / 2), "above": (X - w / 2, Y - gap - h),
+                     "right": (X + gap + 150 * s, Y - h / 2), "below": (X - w / 2, Y + gap + 60 * s)}
+            fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
+            side = next((k for k, xy in sides.items() if fits(xy)), "left")
+            x, y = sides[side]
+            x, y = min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h)
+            card = fade(card, alpha) if alpha < 1 else card.copy()
+            d, a = ImageDraw.Draw(card), int(255 * alpha)
+            k = 14 * s  # the arrow, on the side facing the press
+            if side in ("left", "right"):
+                ax, ay = (m + w, min(max(Y - y, 24 * s), h - 24 * s) + m) if side == "left" else (m, min(max(Y - y, 24 * s), h - 24 * s) + m)
+                tip = ax + (k if side == "left" else -k)
+                d.polygon([(ax, ay - k), (tip, ay), (ax, ay + k)], fill=(255, 255, 255, a))
+            else:
+                ax, ay = min(max(X - x, 24 * s), w - 24 * s) + m, (m + h if side == "above" else m)
+                tip = ay + (k if side == "above" else -k)
+                d.polygon([(ax - k, ay), (ax, tip), (ax + k, ay)], fill=(255, 255, 255, a))
+            self.paste(ov, card, x - m, y - m)
+            return 0
+        cap = self.capsule(n, total, step["title"], step.get("note"))
+        if alpha < 1:
+            cap = fade(cap, alpha)
+        rise = (1 - ease(alpha)) * 12 * s  # slides up as it fades in
+        if kind == "chapter":
+            self.paste(ov, cap, 28 * s, 24 * s + rise)
+            return 0
+        self.paste(ov, cap, (self.w - cap.width) / 2, self.h - 40 * s - cap.height + rise)
+        return cap.height + 40 * s
 
     def keys(self, ov, item, t, alpha, bottom):
         """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
@@ -902,6 +980,8 @@ def render(args):
     if pointer not in POINTERS:
         sys.exit(f"events: pointer must be one of {', '.join(POINTERS)}, got {pointer!r}")
     steps = load_steps(args.steps) if args.steps else []
+    for st in steps:
+        st["anchor"] = step_anchor(st, gs)
     masks, mspace = load_masks(args.masks) if args.masks else ([], space)
     start = hms(args.start)
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -963,18 +1043,12 @@ def render(args):
             paint.cursor(ov, track, gs, t)
         blend(frame, ov)
         ov = Image.new("RGBA", (W, H))  # captions stay put
+        covered = 0
         if cur:
             i, step, alpha = cur
-            pan = paint.panel(i + 1, step["title"], step.get("note"))
-            if alpha < 1:
-                pan = pan.copy()
-                pan.putalpha(pan.getchannel("A").point(lambda v: int(v * alpha)))
-            ov.alpha_composite(pan, ((W - pan.width) // 2, H - pan.height - round(8 * paint.s)))
-        if k := key_at(keys, t):
-            bottom = H - round(24 * paint.s)
-            if cur:  # sit above the caption panel
-                bottom = H - round(12 * paint.s) - pan.height
-            paint.keys(ov, k[0], t, k[1], bottom)
+            covered = paint.caption(ov, step, i + 1, len(steps), alpha, step.get("anchor"))
+        if k := key_at(keys, t):  # above a bottom caption
+            paint.keys(ov, k[0], t, k[1], H - round(24 * paint.s) - (covered and covered - round(12 * paint.s)))
         paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else "") + (f"  ·  快轉 {args.idle_speed}×" if span else ""))
         blend(frame, ov)
         if framer:

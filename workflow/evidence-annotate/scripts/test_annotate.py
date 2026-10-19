@@ -384,3 +384,26 @@ def test_framer_pads_keeps_the_frame_and_rounds_its_corners():
     assert tuple(a.load_style({"style": {"frame": ["#6d5dfc", "#f27b9b"]}})["frame"][0]) == (0x6D, 0x5D, 0xFC)
     with pytest.raises(SystemExit):
         a.load_style({"style": {"frame": "pink"}})
+
+
+def test_step_anchor_is_the_first_press_inside_else_the_first_box():
+    gs = a.gestures([ev("10:00:01.0", "tap", 10, 20), ev("10:00:03.0", "tap", 300, 400)])
+    st = {"from": a.hms("10:00:02.0"), "to": a.hms("10:00:05.0"), "boxes": [[0, 0, 100, 50]]}
+    assert a.step_anchor(st, gs) == (300, 400)
+    assert a.step_anchor({**st, "from": a.hms("10:00:04.0")}, gs) == (50, 25)
+    assert a.step_anchor({"from": 0, "to": 1}, gs) is None
+
+
+@pytest.mark.parametrize("kind", a.CAPTIONS)
+def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"caption": kind}}))
+    ov = Image.new("RGBA", (1280, 720))
+    covered = p.caption(ov, {"title": "Save", "note": "closes the form"}, 2, 3, 1.0, (900, 400))
+    assert ov.getbbox() is not None
+    assert (covered > 0) == (kind == "pill")
+
+
+def test_zoom_true_is_the_default_magnification():
+    assert a.load_style({"style": {"zoom": True}})["zoom"] == a.ZOOM_DEFAULT
+    assert a.load_style({"style": {"zoom": False}})["zoom"] == 0
