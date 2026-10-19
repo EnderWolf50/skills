@@ -481,9 +481,18 @@ class Painter:
         self.f_tag = font(round(22 * s), 600)
         self.f_key = font(round(22 * s), 600)
         self.cache = {}
+        self.view = None  # (x0, y0, kx, ky): the zoom's crop box in frame pixels and its magnification
 
     def xy(self, x, y):
-        return x * self.sx, y * self.sy
+        """Event space -> output pixels, through the zoom when one is on."""
+        return self.vp(x * self.sx, y * self.sy)
+
+    def vp(self, X, Y):
+        """Frame pixels -> output pixels: overlays are drawn after the zoom, so they stay sharp and their size."""
+        if not self.view:
+            return X, Y
+        x0, y0, kx, ky = self.view
+        return (X - x0) * kx, (Y - y0) * ky
 
     # --- touches
     def circle(self, ov, X, Y, r, fill, fill_a, edge, edge_a, edge_w):
@@ -597,11 +606,11 @@ class Painter:
             layer = Image.new("RGBA", (self.w, self.h))
             d = ImageDraw.Draw(layer)
             for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * FX):
-                d.line([(a[0] * s, a[1] * s), (b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * FX * s)), joint="curve")
+                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * FX * s)), joint="curve")
             ov.alpha_composite(layer)
         if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX))):
             gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
-            self.radial(ov, (gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s, g[2] * FX * s, fx, g[3])
+            self.radial(ov, *self.vp((gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s), g[2] * FX * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
         rot = heading - cm.REST_HEADING
         since, until = track.rest(t)
@@ -619,7 +628,7 @@ class Painter:
         tag = self.tag()
         if alpha < 1:
             im, tag = (fade(i, alpha) if i else None for i in (im, tag))
-        X, Y = x * s, y * s
+        X, Y = self.vp(x * s, y * s)
         self.paste(ov, im, X - half, Y - half)
         if tag:
             self.paste(ov, tag, X + 29 * s, Y + 38 * s)
@@ -778,13 +787,19 @@ def blend(frame, ov):
         frame[y0:y1, x0:x1] = (frame[y0:y1, x0:x1].astype(np.float32) * (1 - a) + o[:, :, :3] * a).astype(np.uint8)
 
 
-def zoom_frame(frame, region, space):
-    """Crop `region` (event-space [x,y,w,h]) out of the frame and scale it back to the frame size."""
-    H, W = frame.shape[:2]
+def crop_box(region, W, H, space):
+    """Region (event-space [x,y,w,h]) -> its pixel box (x0, y0, x1, y1) in a W x H frame, at least 2 px."""
     x, y, w, h = region
     x0, y0 = min(max(round(x * W / space[0]), 0), W - 2), min(max(round(y * H / space[1]), 0), H - 2)
     x1, y1 = min(max(x0 + 2, round((x + w) * W / space[0])), W), min(max(y0 + 2, round((y + h) * H / space[1])), H)
-    return cv2.resize(frame[y0:y1, x0:x1], (W, H), interpolation=cv2.INTER_LINEAR)
+    return x0, y0, x1, y1
+
+
+def zoom_frame(frame, region, space):
+    """Crop `region` (event-space [x,y,w,h]) out of the frame and scale it back to the frame size."""
+    H, W = frame.shape[:2]
+    x0, y0, x1, y1 = crop_box(region, W, H, space)
+    return cv2.resize(frame[y0:y1, x0:x1], (W, H), interpolation=cv2.INTER_CUBIC)
 
 
 # ---------------------------------------------------------------- render
@@ -927,9 +942,15 @@ def render(args):
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
         apply_masks(frame, tv, masks, spans, mspace)
         cur = step_at(steps, t)
+        region = (zoom_region(cur[1], t, space) if cur else None) or (cam.region(t) if cam else None)
+        paint.view = None
+        if region:  # zoom the picture first, then draw on it through the zoom: overlays stay sharp
+            frame = zoom_frame(frame, region, space)
+            x0, y0, x1, y1 = crop_box(region, W, H, space)
+            paint.view = (x0, y0, W / (x1 - x0), H / (y1 - y0))
         ov = Image.new("RGBA", (W, H))
         d = ImageDraw.Draw(ov)
-        if cur:  # boxes and touches live in the zoomed picture
+        if cur:
             for x, y, w, h, *label in cur[1].get("boxes", []):
                 paint.box(d, x, y, w, h, label[0] if label else "", cur[2])
         while gi < len(gs) and gs[gi]["t1"] + 0.7 < t:
@@ -941,9 +962,6 @@ def render(args):
         if track:
             paint.cursor(ov, track, gs, t)
         blend(frame, ov)
-        region = (zoom_region(cur[1], t, space) if cur else None) or (cam.region(t) if cam else None)
-        if region:
-            frame = zoom_frame(frame, region, space)
         ov = Image.new("RGBA", (W, H))  # captions stay put
         if cur:
             i, step, alpha = cur
