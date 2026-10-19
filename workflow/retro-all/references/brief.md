@@ -17,4 +17,4 @@ Find, with evidence (session-id8 + date + quote or count):
 
 Done when every session block in your digest has been read, every pattern seen in two or more sessions is either reported or matched to a known finding, and every repeated sequence and every costly fact has been weighed as a script or a docs candidate.
 
-Output (900 words at most): a ranked list, skill candidates first. Each item: title, category, `new` or `recurrence of F-<n>`, evidence (session ids, dates, counts), proposed change (file + what), and for a new item its `recheck` pattern plus a `recheck-rg` regex when the pattern is mechanical.
+Output (900 words at most): a ranked list, skill candidates first. Each item: title, category, `new` or `recurrence of F-<n>`, evidence (session ids, dates, counts), proposed change (file + what; when the change hands work to an agent, the agent type, model and effort you would pick, and why), and for a new item its `recheck` pattern plus a `recheck-rg` regex when the pattern is mechanical.
