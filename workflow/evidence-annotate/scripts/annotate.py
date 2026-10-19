@@ -49,7 +49,7 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
-         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False}  # events.json "style"; color None = the
+         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False, "frame": None}  # events.json "style"; color None = the
 # cursor's own (COLORS); zoom and idle_fade 0 = off
 CURSORS = ("mac", "cua", "figma")
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
@@ -203,14 +203,24 @@ def load_style(doc):
     for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4), ("idle_fade", 0, 600)):
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
-    c = str(st["color"] or COLORS[st["cursor"]]).lstrip("#")
-    try:
-        st["color"] = tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else None
-    except ValueError:
-        st["color"] = None
+    given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
     if st["color"] is None:
-        sys.exit(f"events: style.color must be #rrggbb, got {doc['style']['color']!r}")
+        sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
+    if st["frame"] is not None:
+        stops = st["frame"] if isinstance(st["frame"], list) else [st["frame"]]
+        if not 1 <= len(stops) <= 2 or None in (stops := [rgb(c) for c in stops]):
+            sys.exit(f"events: style.frame must be #rrggbb or [#rrggbb, #rrggbb], got {st['frame']!r}")
+        st["frame"] = stops
     return st
+
+
+def rgb(c):
+    """'#rrggbb' -> (r, g, b), or None when it is not one."""
+    c = str(c).lstrip("#")
+    try:
+        return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else None
+    except ValueError:
+        return None
 
 
 def press_k(gs, t):
@@ -712,6 +722,41 @@ class Painter:
         d.text((x + 8 * s, y + 10 * s), text, font=self.f_small, fill=(230, 230, 230, 230), anchor="lm")
 
 
+class Framer:
+    """Puts each frame on a background (a colour or a diagonal two-colour gradient) with padding, rounded
+    corners and a soft shadow. The output grows by the padding, so the recording keeps its full size."""
+
+    def __init__(self, w, h, stops):
+        s = w / 1280
+        self.px, self.py = round(w * 0.04) // 2 * 2, round(h * 0.06) // 2 * 2
+        self.w, self.h = w + 2 * self.px, h + 2 * self.py
+        yy, xx = np.mgrid[0:self.h, 0:self.w]
+        u = ((xx / self.w + yy / self.h) / 2)[..., None]
+        a, b = np.array(stops[0], float), np.array(stops[-1], float)
+        bg = a * (1 - u) + b * u
+        box = Image.new("L", (self.w, self.h))
+        self.r = round(14 * s)
+        ImageDraw.Draw(box).rounded_rectangle([self.px, self.py + round(10 * s), self.px + w, self.py + h + round(10 * s)], radius=self.r, fill=255)
+        shade = np.asarray(box.filter(ImageFilter.GaussianBlur(24 * s)), float)[..., None] / 255 * 0.35
+        self.bg = (bg * (1 - shade)).astype(np.uint8)
+        corner = Image.new("L", (2 * self.r, 2 * self.r))
+        ImageDraw.Draw(corner).ellipse([0, 0, 2 * self.r - 1, 2 * self.r - 1], fill=255)
+        self.round = np.asarray(corner.resize((self.r, self.r), Image.LANCZOS, box=(0, 0, self.r, self.r)), float)[..., None] / 255
+        self.fw, self.fh = w, h
+
+    def __call__(self, frame):
+        out = self.bg.copy()
+        x, y, w, h, r = self.px, self.py, self.fw, self.fh, self.r
+        out[y:y + h, x:x + w] = frame
+        for flip_y in (False, True):  # blend the four corners into the background
+            for flip_x in (False, True):
+                m = self.round[::-1 if flip_y else 1, ::-1 if flip_x else 1]
+                ys = slice(y + h - r, y + h) if flip_y else slice(y, y + r)
+                xs = slice(x + w - r, x + w) if flip_x else slice(x, x + r)
+                out[ys, xs] = (frame[ys.start - y:ys.stop - y, xs.start - x:xs.stop - x] * m + self.bg[ys, xs] * (1 - m)).astype(np.uint8)
+        return out
+
+
 def k_float(since):
     """The float eases in over its first second, so the pointer leaves its press point gently."""
     return ease(since)
@@ -860,8 +905,10 @@ def render(args):
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
+    framer = Framer(W, H, style["frame"]) if style["frame"] else None
+    OW, OH = (framer.w, framer.h) if framer else (W, H)
     enc = None if args.no_video else subprocess.Popen(  # the crop keeps both sides even, as 4:2:0 needs
-        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", f"{num}/{den}",
+        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}", "-r", f"{num}/{den}",
          "-i", "-", "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *encoder_args(), "-pix_fmt", "yuv420p",
          "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
     n, size, gi = 0, W * H * 3, 0
@@ -912,6 +959,8 @@ def render(args):
             paint.keys(ov, k[0], t, k[1], bottom)
         paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else "") + (f"  ·  快轉 {args.idle_speed}×" if span else ""))
         blend(frame, ov)
+        if framer:
+            frame = framer(frame)
         if n in want:
             png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t, 3).replace(':', '')}.png")
             Image.fromarray(frame).save(png)

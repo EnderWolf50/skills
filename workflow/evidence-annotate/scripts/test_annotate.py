@@ -373,3 +373,14 @@ def test_idle_spans_cover_only_long_quiet_gaps_inside_their_edges():
     end3 = gs[1]["t1"] + 1.0
     assert spans == [pytest.approx((end3 + 0.3, a.hms("10:00:10.0") - 0.3 - 0.3)),
                      pytest.approx((a.hms("10:00:11.0") + 0.3, a.hms("10:00:20.0") - 0.8 - 0.3))]
+
+
+def test_framer_pads_keeps_the_frame_and_rounds_its_corners():
+    f = a.Framer(1280, 720, [(109, 93, 252), (242, 123, 155)])
+    out = f(np.full((720, 1280, 3), 200, np.uint8))
+    assert out.shape == (f.h, f.w, 3) and f.w % 2 == 0 and f.h % 2 == 0
+    assert (out[f.py + 360, f.px + 640] == 200).all()  # content untouched
+    assert not (out[f.py, f.px] == 200).all()  # the corner is cut round
+    assert tuple(a.load_style({"style": {"frame": ["#6d5dfc", "#f27b9b"]}})["frame"][0]) == (0x6D, 0x5D, 0xFC)
+    with pytest.raises(SystemExit):
+        a.load_style({"style": {"frame": "pink"}})
