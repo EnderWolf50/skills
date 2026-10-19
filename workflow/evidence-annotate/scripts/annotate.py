@@ -752,6 +752,22 @@ def encoder_args():
     return ["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "24", "-tag:v", "hvc1"] if ok else ["-c:v", "libx264", "-crf", "20"]
 
 
+IDLE_EDGE_S = 0.3  # an idle span starts and ends this far inside its quiet gap, so motion around it plays at 1x
+
+
+def idle_spans(gs, keys, steps, after):
+    """Wall-time spans [a, b] with nothing to follow for more than `after` seconds: no glide, press or ring
+    (0.8 s before a press to 1 s after), no key pill, no step caption appearing (its first 1.5 s)."""
+    busy = sorted([(g["t0"] - 0.8, g["t1"] + 1.0) for g in gs] + [(k["t0"] - 0.3, k["t1"]) for k in keys]
+                  + [(st["from"] - 0.3, st["from"] + 1.5) for st in steps])
+    spans, end = [], -np.inf
+    for a, b in busy:
+        if end > -np.inf and a - end > after:
+            spans.append((end + IDLE_EDGE_S, a - IDLE_EDGE_S))
+        end = max(end, b)
+    return spans
+
+
 def read_frames(pipe, size):
     """Frames of `size` bytes from a pipe, read ahead on a thread so decoding overlaps drawing."""
     q = Queue(maxsize=8)
@@ -850,9 +866,17 @@ def render(args):
          "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
     n, size, gi = 0, W * H * 3, 0
     out = FrameWriter(enc.stdin) if enc else None
+    fast = idle_spans(gs, keys, steps, args.idle_after) if args.idle_speed > 1 else []
+    if fast:
+        print(f"[annotate] {len(fast)} idle spans at {args.idle_speed}x, {sum(b - a for a, b in fast):.1f}s of wall time", flush=True)
+    kept = 0
     for buf in read_frames(dec.stdout, size):
         tv = n / fps  # clip time
         t = start + ss + tv  # wall time
+        span = next((sp for sp in fast if sp[0] <= t < sp[1]), None)
+        if span and round((t - span[0]) * fps) % args.idle_speed and n not in want:  # dropped: skip the drawing
+            n += 1
+            continue
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
         apply_masks(frame, tv, masks, spans, mspace)
         cur = step_at(steps, t)
@@ -886,14 +910,15 @@ def render(args):
             if cur:  # sit above the caption panel
                 bottom = H - round(12 * paint.s) - pan.height
             paint.keys(ov, k[0], t, k[1], bottom)
-        paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else ""))
+        paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else "") + (f"  ·  快轉 {args.idle_speed}×" if span else ""))
         blend(frame, ov)
         if n in want:
             png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t, 3).replace(':', '')}.png")
             Image.fromarray(frame).save(png)
             print(f"[annotate] frame {png}", flush=True)
-        if out:
+        if out and not (span and round((t - span[0]) * fps) % args.idle_speed):
             out.write(frame.tobytes())
+            kept += 1
         n += 1
         if n % 1800 == 0:
             print(f"[annotate] {n} frames ({tv:.0f}s)", flush=True)
@@ -904,7 +929,8 @@ def render(args):
     if n == 0 or dec.returncode or (enc and enc.returncode):
         sys.exit(f"no output: ffmpeg decode rc {dec.returncode}, encode rc {enc.returncode if enc else '-'}, {n} frames "
                  f"(check VIDEO, --from/--to and --start)")
-    print(f"[annotate] done ({n} frames)" + ("" if args.no_video else f", wrote {args.out}"), flush=True)
+    print(f"[annotate] done ({n} frames" + (f", {kept} written" if kept != n and not args.no_video else "") + ")"
+          + ("" if args.no_video else f", wrote {args.out}"), flush=True)
 
 
 def main(argv=None):
@@ -918,6 +944,8 @@ def main(argv=None):
     ap.add_argument("--from")
     ap.add_argument("--to")
     ap.add_argument("--offset", type=float, default=0.0)
+    ap.add_argument("--idle-speed", type=int, default=1, help="play quiet stretches this many times faster (1 = off)")
+    ap.add_argument("--idle-after", type=float, default=2.0, help="seconds without activity before a stretch speeds up")
     ap.add_argument("--frames")
     ap.add_argument("--font")
     ap.add_argument("--no-video", action="store_true")

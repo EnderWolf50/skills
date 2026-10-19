@@ -364,3 +364,12 @@ def test_idle_fade_hides_a_resting_pointer_and_brings_it_back_before_it_moves():
         p.cursor(ov, tr, gs, t)
         return ov.getbbox() is not None
     assert drawn(a.hms("10:00:01.5")) and not drawn(a.hms("10:00:05.0")) and drawn(tr.glides[0][0])
+
+
+def test_idle_spans_cover_only_long_quiet_gaps_inside_their_edges():
+    gs = a.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:03.0", "tap", 1, 1), ev("10:00:20.0", "tap", 1, 1)])
+    keys = a.key_items([ev("10:00:10.0", "key", keys="Enter")])
+    spans = a.idle_spans(gs, keys, [], 2.0)
+    end3 = gs[1]["t1"] + 1.0
+    assert spans == [pytest.approx((end3 + 0.3, a.hms("10:00:10.0") - 0.3 - 0.3)),
+                     pytest.approx((a.hms("10:00:11.0") + 0.3, a.hms("10:00:20.0") - 0.8 - 0.3))]
