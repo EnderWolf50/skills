@@ -49,7 +49,8 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
-         "tilt": 1.0, "zoom": 0}  # events.json "style"; color None = the cursor's own (COLORS); zoom 0 = off
+         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False}  # events.json "style"; color None = the
+# cursor's own (COLORS); zoom and idle_fade 0 = off
 CURSORS = ("mac", "cua", "figma")
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
@@ -167,6 +168,14 @@ class Track:
             if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
                 traj = traj.scaled(gap / traj.arrival)
             self.glides.append((g["t0"] - traj.arrival, g, traj, b))
+        self.moving = sorted([(st, st + tr.duration()) for st, _, tr, _ in self.glides] + [(g["t0"], g["t1"]) for g in gs])
+
+    def rest(self, t):
+        """(seconds at rest so far, seconds until the next move): (0, 0) while moving or pressing."""
+        if any(a <= t <= b for a, b in self.moving):
+            return 0.0, 0.0
+        since = t - max((b for a, b in self.moving if b < t), default=-np.inf)
+        return since, min((a for a, b in self.moving if a > t), default=np.inf) - t
 
     def at(self, t):
         """(x, y, heading, trajectory or None, seconds into it) in 1280-wide pixels."""
@@ -191,7 +200,7 @@ def load_style(doc):
         sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
-    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4)):
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4), ("idle_fade", 0, 600)):
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
     c = str(st["color"] or COLORS[st["cursor"]]).lstrip("#")
@@ -585,11 +594,24 @@ class Painter:
             self.radial(ov, (gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s, g[2] * FX * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
         rot = heading - cm.REST_HEADING
+        since, until = track.rest(t)
+        if self.style["float"] and since > 0:  # Cua's resting drift: a slow 4 s loop, a few points and degrees
+            a = (since % 4) / 4 * 2 * np.pi
+            x, y = x + np.sin(a) * 5 * FX * k_float(since), y + (6 * np.cos(a) - 6) * FX * k_float(since)
+            rot += np.radians(2.5) * np.sin(a) * k_float(since)
+        alpha = 1.0
+        if self.style["idle_fade"] and since > 0:
+            alpha = 1 - ease((since - self.style["idle_fade"]) / 0.4) * (1 - ease(1 - until / 0.25))
+        if alpha <= 0.01:
+            return
         if abs(rot) > 0.005:
             im = im.rotate(-np.degrees(rot), resample=Image.BICUBIC, center=(half, half))
+        tag = self.tag()
+        if alpha < 1:
+            im, tag = (fade(i, alpha) if i else None for i in (im, tag))
         X, Y = x * s, y * s
         self.paste(ov, im, X - half, Y - half)
-        if tag := self.tag():
+        if tag:
             self.paste(ov, tag, X + 29 * s, Y + 38 * s)
 
     def gesture(self, ov, d, g, t, pointer):
@@ -688,6 +710,17 @@ class Painter:
         x, y = 10 * s, self.h - 30 * s
         d.rounded_rectangle([x, y, x + tw + 16 * s, y + 20 * s], radius=10 * s, fill=(0, 0, 0, 140))
         d.text((x + 8 * s, y + 10 * s), text, font=self.f_small, fill=(230, 230, 230, 230), anchor="lm")
+
+
+def k_float(since):
+    """The float eases in over its first second, so the pointer leaves its press point gently."""
+    return ease(since)
+
+
+def fade(im, alpha):
+    im = im.copy()
+    im.putalpha(im.getchannel("A").point(lambda v: int(v * alpha)))
+    return im
 
 
 def blend(frame, ov):

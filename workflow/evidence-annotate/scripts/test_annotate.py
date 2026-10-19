@@ -343,3 +343,24 @@ def test_camera_fits_a_long_drag():
     gs = a.gestures([ev("10:00:02.0", "swipe", 100, 360, x2=1100, y2=360, ms=500)])
     _, _, w, _ = a.Camera(gs, [], SPACE, 2.5).region(a.hms("10:00:02.3"))
     assert w >= 1000 * 1.4 - 1 or w == 1280
+
+
+def test_rest_counts_from_the_last_move_to_the_next():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:09.0", "tap", 900, 600)])
+    tr = track(gs)
+    start = tr.glides[0][0]
+    since, until = tr.rest(a.hms("10:00:03.0"))
+    assert since == pytest.approx(a.hms("10:00:03.0") - gs[0]["t1"]) and until == pytest.approx(start - a.hms("10:00:03.0"))
+    assert tr.rest(gs[1]["t0"]) == (0, 0)
+
+
+def test_idle_fade_hides_a_resting_pointer_and_brings_it_back_before_it_moves():
+    from PIL import Image
+    gs = a.gestures([ev("10:00:01.0", "tap", 300, 300), ev("10:00:09.0", "tap", 900, 600)])
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"idle_fade": 1.5}}))
+    tr = p.track(gs)
+    def drawn(t):
+        ov = Image.new("RGBA", (1280, 720))
+        p.cursor(ov, tr, gs, t)
+        return ov.getbbox() is not None
+    assert drawn(a.hms("10:00:01.5")) and not drawn(a.hms("10:00:05.0")) and drawn(tr.glides[0][0])
