@@ -74,9 +74,13 @@ def pick_window(wins, substr):
     return w
 
 
-def capture_chain(hwnd, crop_top):
-    """The filter chain up to the CPU: gfxcapture of hwnd (no cursor), frames downloaded as BGRA."""
-    return f"gfxcapture=hwnd={hwnd}:capture_cursor=false:max_framerate={FPS}:crop_top={crop_top},hwdownload,format=bgra"
+def capture_chain(hwnd, crop_top, t0_us=None, cursor=False):
+    """The filter chain up to the CPU: gfxcapture of hwnd (the mouse cursor only with `cursor`), frames downloaded as BGRA.
+
+    gfxcapture stamps its first frame 0, however long ffmpeg took to start. With t0_us (wall clock, epoch
+    microseconds) every frame is shifted by the first frame's wall time minus t0_us, so pts 0 is t0_us."""
+    shift = (f",setpts=if(eq(N\\,0)\\,st(0\\,RTCTIME))+PTS+(ld(0)-{t0_us})/1000000/TB" if t0_us is not None else "")
+    return f"gfxcapture=hwnd={hwnd}:capture_cursor={str(cursor).lower()}:max_framerate={FPS}:crop_top={crop_top}{shift},hwdownload,format=bgra"
 
 
 def out_size(w, crop_top):
@@ -249,7 +253,8 @@ def start(a):
     started = datetime.now()
     mkv = out / f"{PREFIX}{a.profile}_{started:%Y%m%d_%H%M%S}.mkv"
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-           f"{capture_chain(win['hwnd'], a.crop_top)},scale={ow}:{oh},fps={FPS},format=yuv420p",
+           # start_time=0 repeats the first frame back to `started`, so video time = wall time - started
+           f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},scale={ow}:{oh},fps={FPS}:start_time=0,format=yuv420p",
            *encoder_args(a.encoder), str(mkv)]
     save(sp, {"cmd": cmd, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
               "window": win["title"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
@@ -358,6 +363,7 @@ def main(argv=None):
     s.add_argument("--crop-top", type=int, default=0, help="pixels cut from the top of the window (title bar)")
     s.add_argument("--keep-gb", type=float, default=20, help="recordings kept in --out; oldest deleted first")
     s.add_argument("--min-free-gb", type=float, default=30, help="refuse to start below this much free space")
+    s.add_argument("--cursor", action="store_true", help="record the mouse cursor (desktop and browser runs)")
     s.add_argument("--encoder", choices=["auto", "nvenc", "x264"], default="auto", help="auto = NVENC if a probe encode works")
     s.set_defaults(fn=start)
     for name, fn in (("stop", stop), ("status", status)):

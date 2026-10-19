@@ -47,6 +47,14 @@ def test_capture_chain_targets_the_hwnd_without_cursor_and_downloads_frames():
     c = screenrec.capture_chain(4242, 30)
     assert "hwnd=4242" in c and "capture_cursor=false" in c and "crop_top=30" in c
     assert c.endswith("hwdownload,format=bgra")
+    assert "capture_cursor=true" in screenrec.capture_chain(4242, 0, cursor=True)
+
+
+def test_capture_chain_shifts_pts_to_the_wall_clock_start():
+    assert "setpts" not in screenrec.capture_chain(4242, 0)  # the black-frame probe needs no shift
+    c = screenrec.capture_chain(4242, 0, 1_700_000_000_000_000)
+    assert "st(0\\,RTCTIME)" in c and "ld(0)-1700000000000000" in c
+    assert c.index("setpts") < c.index("hwdownload")  # stamped as captured, before the download
 
 
 def test_is_black_uses_mean_brightness():
@@ -110,7 +118,7 @@ def write_state(path, **kv):
 
 
 def start_args(out, profile="p"):
-    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264")
+    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False)
 
 
 def stub_start(env, popen):
