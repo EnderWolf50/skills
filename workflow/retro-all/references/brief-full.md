@@ -21,4 +21,4 @@ Find **every** instance, with evidence (file + timestamp + short quote or count)
 
 Done when every line of your files is read and every pattern is reported, one-off ones marked `x1`.
 
-Output (1,500 words at most), a ranked list, most severe first. Each item: title, category (skill | patch | correction | guardrail | navigation | tool-economy | information-access | delegation | steering | script | docs), severity (high/med/low), evidence, proposed change (file + what), and a `recheck` pattern plus a `recheck-rg` Python regex over tool-call inputs when the pattern is mechanical. Write in English.
+Output (1,500 words at most), a ranked list, most severe first. Each item: title, category (skill | patch | correction | guardrail | navigation | tool-economy | information-access | delegation | steering | script | docs), severity (high/med/low), evidence, proposed change (file + what; when the change hands work to an agent, the agent type, model and effort you would pick, and why), and a `recheck` pattern plus a `recheck-rg` Python regex over tool-call inputs when the pattern is mechanical. Write in English.
