@@ -66,9 +66,7 @@ CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
-BRANDS = {"claude": "#d97757", "copilot": "#8534f3", "figma": "#a259ff", "cursor": "#f54e00", "codex": "#10a37f"}  # a
-# label naming one of these takes its brand colour when style.color is unset (Claude, Copilot from their brand pages)
-TAG_D = 72  # px at 1280 wide from the tip to the name tag's near corner, clear of the largest arrow
+TAG_D = 92  # px at 1280 wide (FX 2.5) from the tip to the name tag's near corner: past the arrow by a third of it, as Figma's
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
@@ -265,7 +263,7 @@ def load_style(doc, preset="evidence"):
             continue
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}{' or \"aim\"' if k == 'tilt' else ''}, got {st[k]!r}")
-    given, st["color"] = st["color"], rgb(st["color"] or BRANDS.get(st["label"].lower()) or COLORS[st["cursor"]])
+    given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
     if st["color"] is None:
         sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
     if st["frame"] is not None:
@@ -623,12 +621,13 @@ class Painter:
             u = 42 * FX / 128 * self.s * k * 4
             pts, tip = svg_points(CUA_PATH), (55, 30)
         else:
-            u = {"mac": 3.2, "figma": 4.5}[kind] * self.s * k * 4  # both about as tall as cua's
+            u = {"mac": 3.2, "figma": 4.5}[kind] * FX / 2.5 * self.s * k * 4  # both about as tall as cua's
             pts, tip = SHAPES[kind], (0, 0)
         half = round(130 * u) if kind == "cua" else round(30 * u)  # room for the shape, its glow and any rotation
         size = (2 * half, 2 * half)
         mask = Image.new("L", size)
-        ImageDraw.Draw(mask).polygon([(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts], fill=255)
+        poly = [(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts]
+        ImageDraw.Draw(mask).polygon(poly, fill=255)
         m = np.asarray(mask)
         outside = cv2.distanceTransform(255 - m, cv2.DIST_L2, 5)  # pixels to the shape, 0 inside
         inside = cv2.distanceTransform(m, cv2.DIST_L2, 5)  # pixels to the edge, 0 outside
@@ -647,7 +646,8 @@ class Painter:
             im.paste((*rgb, 255), (0, 0), grow(-2.5))
         else:  # drop shadow, white rim outside the outline, then the fill
             edge = {"mac": 1.3, "figma": 1.2}[kind]
-            border = grow(edge)
+            border = Image.new("L", size)
+            ImageDraw.Draw(border).polygon(mitre(poly, edge * u), fill=255)
             shadow = Image.new("RGBA", size, (0, 0, 0))
             a, blur = {"mac": (0.3, 4), "figma": (0.25, 3)}[kind]
             shadow.putalpha(border.filter(ImageFilter.GaussianBlur(blur * u / 3.2)).point(lambda v: int(v * a)))
@@ -659,8 +659,8 @@ class Painter:
         return out
 
     def tag(self):
-        """Name tag (style.label) in the style colour, or None without a label or on the mac arrow (no one's cursor)."""
-        if not self.style["label"] or self.style["cursor"] == "mac":
+        """Name tag (style.label) in the style colour, or None without a label."""
+        if not self.style["label"]:
             return None
         if "tag" not in self.cache:
             s = self.s
@@ -896,8 +896,26 @@ def tag_at(w, h, rot, s):
     arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
     a = np.arctan2(38, 29) + rot
     dx, dy = np.cos(a), np.sin(a)
-    cx, cy = TAG_D * s * dx + w / 2 * np.clip(2 * dx, -1, 1), TAG_D * s * dy + h / 2 * np.clip(2 * dy, -1, 1)
+    d = TAG_D * FX / 2.5 * s
+    # the tag switches side once the body leans past 17° off straight down (dx 0.3, about where "aim" turns it):
+    # Figma's then hangs below the arrow aimed up right, its right edge a third of the gap past the tip
+    side = np.clip((dx - 0.3) * 10, -1, 1)
+    cx, cy = d * dx + w / 2 * side + d / 3 * max(0, -side), d * dy + h / 2 * np.clip(dy * 10, -1, 1)
     return round(cx - w / 2), round(cy - h / 2)
+
+
+def mitre(pts, e):
+    """The closed polygon pts grown outward by e with sharp (mitred) corners."""
+    p = np.array(pts, float)
+    n = len(p)
+    area = sum(p[i, 0] * p[(i + 1) % n, 1] - p[(i + 1) % n, 0] * p[i, 1] for i in range(n))
+    out = []
+    for i in range(n):
+        a, b, c = p[i - 1], p[i], p[(i + 1) % n]
+        n1, n2 = (np.array([d[1], -d[0]]) / np.hypot(*d) * np.sign(area) for d in (b - a, c - b))
+        m = n1 + n2
+        out.append(tuple(b + m / np.dot(m, n1) * e))  # where the two offset edges meet
+    return out
 
 
 def k_float(since):
@@ -907,7 +925,7 @@ def k_float(since):
 
 def cap_in(u):
     """A step caption u of the way through its fade (0 hidden, 1 shown): (alpha, px it sits low, scale)."""
-    return u, (1 - ease(u)) * 12, 1
+    return 1 - (1 - u) ** 3, (1 - u) ** 3 * 10, 1  # ease-out cubic in, so ease-in on the way out
 
 
 def fade(im, alpha):
