@@ -730,9 +730,12 @@ class Painter:
             if dot:
                 d.ellipse([pad, cy - dot / 2, pad + dot, cy + dot / 2], fill=(255, 196, 64, 255))
             x = pad + (dot and dot + gap * 0.75)
-            d.text((x, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
             lx = x + nw + gap
-            d.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
+            dim = Image.new("RGBA", im.size)  # drawn apart and composited: a translucent fill drawn straight onto
+            dd = ImageDraw.Draw(dim)          # the capsule would replace its dark pixels instead of blending
+            dd.text((x, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
+            dd.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
+            im.alpha_composite(dim)
             d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
             self.cache[key] = im
         return self.cache[key]
