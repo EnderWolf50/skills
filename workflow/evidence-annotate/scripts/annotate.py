@@ -599,6 +599,7 @@ class Painter:
 
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.fx = FX * self.style["size"]
+        self.z = self.style["size"] / 0.6  # the touch dot, click ring and drag trail follow size; 1 at the default
         self.tag_spec = TAG[self.style["cursor"]]
         self.tag_h = TAG_H * s * self.style["size"]
         self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
@@ -644,10 +645,11 @@ class Painter:
                    width=max(1, round(0.045 * L)))
 
     def ring(self, ov, X, Y, age):
-        """Click ring: grows to 100 px (at 1280 wide) with ease-out cubic and fades over RING_S after the press."""
+        """Click ring: grows to 100 px (at 1280 wide and the default size) with ease-out cubic and fades over RING_S
+        after the press."""
         p = age / RING_S
         if 0 <= p <= 1:
-            R, a = 100 * self.s, 0.7 * (1 - p) ** 1.5
+            R, a = 100 * self.s * self.z, 0.7 * (1 - p) ** 1.5
             self.circle(ov, X, Y, R * (1 - (1 - p) ** 3), self.color, 0.3 * a, self.color, a, (0.1 + 0.06 * p) * R * 0.6)
 
     def sprite(self, k):
@@ -789,7 +791,7 @@ class Painter:
 
     def gesture(self, ov, d, g, t, pointer):
         """Rings at the press (and a drag's or hold's release), the drag trail, and for touch a fingertip dot."""
-        s = self.s
+        s = self.s * self.z
         t0, t1 = g["t0"], g["t1"]
         X, Y = self.xy(*pos_at(g, t))
         trail = pointer != "mouse" if self.style["trail"] is None else self.style["trail"]  # no mouse cursor draws one
@@ -807,7 +809,7 @@ class Painter:
         if pointer == "touch":
             vis = max(0.0, min(1, (t1 + 0.3 - t) / 0.3))  # appears on the press itself: a finger has no hover
             if t >= t0 and vis > 0:
-                self.circle(ov, X, Y, 28 * s * press_k([g], t), (255, 255, 255), 0.95 * vis, (0, 0, 0), 0.25 * vis, 4 * s)
+                self.circle(ov, X, Y, 22 * s * press_k([g], t), (255, 255, 255), 0.95 * vis, (0, 0, 0), 0.25 * vis, 4 * s)
 
     # --- boxes
     def box(self, d, x, y, w, h, label, alpha):
