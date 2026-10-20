@@ -919,14 +919,16 @@ def zoom_frame(frame, region, space):
 # ---------------------------------------------------------------- render
 
 def encoder_args():
-    """HEVC on the GPU when a one-frame probe encode works (the -encoders list only says it was compiled in),
-    else libx264. cq 29 / crf 24 measured VMAF 97.5 on a 1440p game clip at about 10 Mbps (cq 24 spent 40 % more
-    for 99.2, and the upload side re-encodes anyway). x264's default 16 px motion search cannot follow a scrolling
-    page and bloats it about tenfold: umh with a 64 px range can."""
-    ok = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
-                         "-c:v", "hevc_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
-    if ok:
-        return ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"]
+    """AV1, else HEVC, on the GPU when a one-frame probe encode works (the -encoders list only says it was
+    compiled in), else libx264. On a 1440p game clip av1_nvenc cq 35 measured VMAF 98.5 at about 10 Mbps, where
+    hevc_nvenc needed cq 29 for 97.5 at the same rate (AV1 plays in every browser; on Apple only from A17 Pro / M3).
+    x264's default 16 px motion search cannot follow a scrolling page and bloats it about tenfold: umh with a
+    64 px range can."""
+    for args in (["-c:v", "av1_nvenc", "-preset", "p7", "-cq", "35"],
+                 ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"]):
+        if subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
+                           *args[:2], "-f", "null", "-"], capture_output=True).returncode == 0:
+            return args
     return ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-x264-params", "me=umh:merange=64"]
 
 
