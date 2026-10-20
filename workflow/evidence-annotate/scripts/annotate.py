@@ -46,20 +46,19 @@ HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
 CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter caption
 FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
-TAG_K = 1.6  # name tag scale at style.size 1; the tag scales with the pointer, so 1.28 at the default 0.8
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "size": 0.8, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
 PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
     "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
     "tutorial": {"zoom": True, "dot": True},  # steps for someone to follow
-    "demo": {"cursor": "figma", "zoom": True, "float": True, "caption": "callout", "dot": True,
+    "demo": {"cursor": "figma", "zoom": True, "float": True, "dot": True,
              "frame": ["#6d5dfc", "#f27b9b"]},  # a showcase to share
     "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#0f172a", "#1e3a5f"]},  # an AI agent at work
 }
@@ -67,8 +66,10 @@ CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
-TAG_D = {"mac": 92, "figma": 92, "cua": 74}  # px at 1280 wide (size 1) from the tip to the name tag's near corner:
-# past the arrow by a third of it, as Figma's; cua's rounder body reaches less far
+TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip at rest, its height; traced off
+    # Figma's (it hangs at the arrow's corner, taller than the arrow) and Cua's (beside the arrow, white-ringed, dark text)
+    "figma": {"at": (58, 60), "h": 80, "ring": False}, "cua": {"at": (46, 33), "h": 52, "ring": True},
+    "mac": {"at": (36, 52), "h": 50, "ring": False}}
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
@@ -576,8 +577,9 @@ class Painter:
 
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.fx = FX * self.style["size"]
-        self.tk = TAG_K * self.style["size"]  # name tag scale
-        self.f_tag = font(round(22 * s * self.tk), 600)
+        self.tag_spec = TAG[self.style["cursor"]]
+        self.tag_h = self.tag_spec["h"] * s * self.style["size"]
+        self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["ring"] else 600)
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
@@ -670,16 +672,24 @@ class Painter:
         """Name tag (style.label) in the style colour, or None without a label."""
         if not self.style["label"]:
             return None
-        if "tag" not in self.cache:
-            s = self.s
-            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-            tw = probe.textlength(self.style["label"], font=self.f_tag)
-            w, h = round(tw + 26 * s * self.tk), round(35 * s * self.tk)
-            im = Image.new("RGBA", (w, h))
-            d = ImageDraw.Draw(im)
-            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s * self.tk), fill=(*self.color, 255))
-            d.text((13 * s * self.tk, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
-            self.cache["tag"] = im
+        if "tag" not in self.cache:  # (image, margin round the body left for Cua's glow)
+            h = round(self.tag_h)
+            tw = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textlength(self.style["label"], font=self.f_tag)
+            w, m, r = round(tw + 0.64 * h), round(0.3 * h), round(0.15 * h)
+            im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
+            body = [m, m, m + w - 1, m + h - 1]
+            text = (255, 255, 255, 255)
+            if self.tag_spec["ring"]:  # Cua's: a soft glow in the colour, a white ring, dark text
+                glow = Image.new("RGBA", im.size)
+                ImageDraw.Draw(glow).rounded_rectangle(body, radius=r, fill=(*self.color, 140))
+                im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(0.12 * h)))
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255), outline=(255, 255, 255, 230),
+                                                     width=max(1, round(0.07 * h)))
+                text = (*(round(c * 0.18) for c in self.color), 255)
+            else:
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255))
+            ImageDraw.Draw(im).text((m + w / 2, m + h / 2), self.style["label"], font=self.f_tag, fill=text, anchor="mm")
+            self.cache["tag"] = (im, m)
         return self.cache["tag"]
 
     def paste(self, ov, im, x, y):
@@ -732,11 +742,13 @@ class Painter:
             im = im.rotate(-np.degrees(rot), resample=Image.BICUBIC, center=(half, half))
         tag = self.tag()
         if alpha < 1:
-            im, tag = (fade(i, alpha) if i else None for i in (im, tag))
+            im, tag = fade(im, alpha), tag and (fade(tag[0], alpha), tag[1])
         X, Y = self.vp(x * s, y * s)
         self.paste(ov, im, X - half, Y - half)
         if tag:
-            tx, ty = tag_at(*tag.size, rot, s * self.fx / FX, TAG_D[self.style['cursor']])
+            tag, m = tag
+            tx, ty = tag_at(tag.width - 2 * m, tag.height - 2 * m, rot, s * self.fx / FX, self.tag_spec["at"])
+            tx, ty = tx - m, ty - m
             lx, ly = np.subtract(self.vp(x0 * s, y0 * s), self.vp(*np.multiply(track.at(t - TAG_LAG[0])[:2], s)))
             if (m := np.hypot(lx, ly)) > TAG_LAG[1] * s:
                 lx, ly = lx / m * TAG_LAG[1] * s, ly / m * TAG_LAG[1] * s
@@ -819,7 +831,8 @@ class Painter:
             # the pointer and its name tag hang below and right of the tip: try left, above, right, below
             sides = [(X - gap - w, Y - h / 2), (X - w / 2, Y - gap - h), (X + gap + 150 * s, Y - h / 2), (X - w / 2, Y + gap + 60 * s)]
             fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
-            x, y = next((xy for xy in sides if fits(xy)), sides[0])
+            over = lambda xy: max(0, edge - xy[0], xy[0] - (self.w - edge - w)) + max(0, edge - xy[1], xy[1] - (self.h - edge - h))
+            x, y = next((xy for xy in sides if fits(xy)), min(sides, key=over))
             self.paste(ov, cap, min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h) + rise)
             return 0
         if kind == "chapter":
@@ -899,12 +912,12 @@ class Framer:
         return out
 
 
-def tag_at(w, h, rot, s, gap=TAG_D["figma"]):
+def tag_at(w, h, rot, s, at=TAG["figma"]["at"]):
     """Top-left of a w x h name tag off the tip, behind the arrow as it turns by rot (Figma's tags trail the
     arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
-    a = np.arctan2(38, 29) + rot
+    a = np.arctan2(at[1], at[0]) + rot
     dx, dy = np.cos(a), np.sin(a)
-    d = gap * s
+    d = np.hypot(*at) * s
     # the tag switches side once the body leans past 17° off straight down (dx 0.3, about where "aim" turns it):
     # Figma's then hangs below the arrow aimed up right, its right edge a third of the gap past the tip
     side = np.clip((dx - 0.3) * 10, -1, 1)

@@ -344,7 +344,8 @@ def test_every_cursor_draws_its_tip_on_the_point_with_a_label(cursor):
     ov = Image.new("RGBA", (1280, 720))
     p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
     assert ov.getpixel((643, 366) if cursor != "cua" else (646, 364))[3] > 200  # the pointer covers the press point
-    assert ov.getpixel((640 + 56 + 10, 360 + 73 + 17))[3] > 200  # the tag sits below right of the tip
+    (tx, ty), k = a.TAG[cursor]["at"], a.STYLE["size"]
+    assert ov.getpixel((round(640 + tx * k + 8), round(360 + ty * k + 8)))[3] > 200  # the tag sits below right of the tip
 
 
 def test_key_items_make_caps_and_join_close_typing():
@@ -468,9 +469,9 @@ def test_zoom_true_is_the_default_magnification():
 
 def test_name_tag_trails_the_arrow():
     w, h, s = 120, 35, 1.0
-    assert a.tag_at(w, h, 0, s) == (56, 73)  # at rest: below right of the tip
+    assert a.tag_at(w, h, 0, s) == (58, 60)  # at rest: at the arrow's corner, below right of the tip
     x, y = a.tag_at(w, h, np.pi, s)  # turned half round: above left, clear of the tip
     assert x + w < 0 and y + h < 0
-    x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(38, 29), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
-    assert y > 0 and abs(x + w - 92 / 3) <= 1
+    x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(60, 58), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
+    assert y > 0 and abs(x + w - np.hypot(58, 60) / 3) <= 1
 
