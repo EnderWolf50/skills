@@ -474,11 +474,3 @@ def test_name_tag_trails_the_arrow():
     x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(38, 29), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
     assert y > 0 and abs(x + w - 92 / 3) <= 1
 
-
-def test_name_tag_flips_off_the_frame_edge():
-    from PIL import Image
-    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "figma", "label": "Claude"}}))
-    gs = a.gestures([ev("10:00:01.0", "tap", 1270, 710)])
-    ov = Image.new("RGBA", (1280, 720))
-    p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
-    assert ov.getpixel((1270 - 56 - 10, 710 - 73 - 17))[3] > 200  # mirrored above left of the tip

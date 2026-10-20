@@ -46,19 +46,19 @@ HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
 CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter caption
 FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
-TAG_K = 1.0  # name tag scale
+TAG_K = 1.6  # name tag scale at style.size 1; the tag scales with the pointer, so 1.28 at the default 0.8
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "size": 1, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "size": 0.8, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
 PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
     "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
-    "tutorial": {"zoom": True, "caption": "callout", "dot": True},  # steps for someone to follow
+    "tutorial": {"zoom": True, "dot": True},  # steps for someone to follow
     "demo": {"cursor": "figma", "zoom": True, "float": True, "caption": "callout", "dot": True,
              "frame": ["#6d5dfc", "#f27b9b"]},  # a showcase to share
     "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#0f172a", "#1e3a5f"]},  # an AI agent at work
@@ -573,8 +573,9 @@ class Painter:
             return f
 
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
-        self.f_tag = font(round(22 * s * TAG_K), 600)
         self.fx = FX * self.style["size"]
+        self.tk = TAG_K * self.style["size"]  # name tag scale
+        self.f_tag = font(round(22 * s * self.tk), 600)
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
@@ -668,11 +669,11 @@ class Painter:
             s = self.s
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             tw = probe.textlength(self.style["label"], font=self.f_tag)
-            w, h = round(tw + 26 * s * TAG_K), round(35 * s * TAG_K)
+            w, h = round(tw + 26 * s * self.tk), round(35 * s * self.tk)
             im = Image.new("RGBA", (w, h))
             d = ImageDraw.Draw(im)
-            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s * TAG_K), fill=(*self.color, 255))
-            d.text((13 * s * TAG_K, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
+            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s * self.tk), fill=(*self.color, 255))
+            d.text((13 * s * self.tk, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
             self.cache["tag"] = im
         return self.cache["tag"]
 
@@ -734,11 +735,6 @@ class Painter:
             lx, ly = np.subtract(self.vp(x0 * s, y0 * s), self.vp(*np.multiply(track.at(t - TAG_LAG[0])[:2], s)))
             if (m := np.hypot(lx, ly)) > TAG_LAG[1] * s:
                 lx, ly = lx / m * TAG_LAG[1] * s, ly / m * TAG_LAG[1] * s
-            tw, th = tag.size
-            if not 0 <= X + tx <= self.w - tw:  # off the frame: the mirror side of the tip
-                tx = -tx - tw
-            if not 0 <= Y + ty <= self.h - th:
-                ty = -ty - th
             self.paste(ov, tag, X + tx - lx, Y + ty - ly)
 
     def gesture(self, ov, d, g, t, pointer):
