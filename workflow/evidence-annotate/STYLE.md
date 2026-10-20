@@ -22,7 +22,7 @@
   | `cua` | `0.25` | `1` | `true` | `sparks` |
 
 - `color` `#rrggbb`: rings, effects, and the `cua`/`figma` pointer and name tag (default `#5ec0e8` for `cua`, else `#4785ff`). One colour per actor reads well.
-- `size`: scales the pointer with its name tag, glow, comet trail and float (default `0.6`, about 38 px tall at 1280 wide; `0.3` to `2`).
+- `size`: scales the pointer with its name tag, glow, comet trail and float, and the touch dot, click ring and drag trail (default `0.6`: an arrow about 38 px tall and a touch dot of 22 px radius at 1280 wide; `0.3` to `2`).
 - `click`, how a mouse pointer marks a press: `ring` (a click ring, the pointer shrinking to 0.8), `shrink` (Figma's: no ring, snapping down to 0.75 in 80 ms and springing back over 0.3 s), `sparks` (Cua's: three short strokes off the tip). `pointer` `touch` and `none` always ring.
 - `trail`: the drag trail (default on for `touch` and `none`, off for a drawn mouse pointer, as macOS, Figma and Cua draw none).
 
