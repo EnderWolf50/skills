@@ -304,7 +304,6 @@ def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
     assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
 
 
-
 def test_aim_reversing_mid_swing_starts_from_where_the_arrow_is():
     gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:01.4", "tap", 900, 300), ev("10:00:01.8", "tap", 300, 300)])
     tr = track(gs, tilt="aim")
