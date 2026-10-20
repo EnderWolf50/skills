@@ -54,7 +54,7 @@ STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "labe
          "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
-                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring"},
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "shrink"},
                  "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
 CLICKS = {"ring": 0.8, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
 # ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
