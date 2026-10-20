@@ -941,10 +941,14 @@ def zoom_frame(frame, region, space):
 
 def encoder_args():
     """HEVC on the GPU when a one-frame probe encode works (the -encoders list only says it was compiled in),
-    else libx264. cq 24 / crf 20 keep small UI text sharp at the source's own size."""
+    else libx264. cq 29 / crf 24 measured VMAF 97.5 on a 1440p game clip at about 10 Mbps (cq 24 spent 40 % more
+    for 99.2, and the upload side re-encodes anyway). x264's default 16 px motion search cannot follow a scrolling
+    page and bloats it about tenfold: umh with a 64 px range can."""
     ok = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
                          "-c:v", "hevc_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
-    return ["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "24", "-tag:v", "hvc1"] if ok else ["-c:v", "libx264", "-crf", "20"]
+    if ok:
+        return ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"]
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-x264-params", "me=umh:merange=64"]
 
 
 IDLE_EDGE_S = 0.3  # an idle span starts and ends this far inside its quiet gap, so motion around it plays at 1x
