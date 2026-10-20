@@ -517,13 +517,12 @@ def test_a_step_zoom_eases_from_the_camera_view_not_the_full_frame():
 def test_the_touch_dot_and_ring_follow_size():
     from PIL import Image, ImageDraw
     g = a.gestures([ev("10:00:01.0", "tap", 640, 360)])[0]
-
     def width(size, t):
         p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": size}}))
         ov = Image.new("RGBA", (1280, 720))
         p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + t, "touch")
         x0, _, x1, _ = ov.getbbox()
         return x1 - x0
-    assert 36 <= width(0.6, 0.0) <= 46  # a 22 px dot (28 drew 50) at the default size
+    assert 36 <= width(0.6, 0.0) <= 46  # a dot of 22 px radius (28 drew 50) at the default size
     assert width(1.2, 0.0) == pytest.approx(2 * width(0.6, 0.0), abs=4)
     assert width(1.2, 0.5) == pytest.approx(2 * width(0.6, 0.5), abs=6)  # the ring grows with it
