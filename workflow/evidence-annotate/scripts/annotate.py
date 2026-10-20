@@ -21,8 +21,8 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 --font    a CJK-capable font file (default: first of the usual Windows / Linux ones)
 """
 import argparse
-import os
 import json
+import os
 import re
 import subprocess
 import sys
