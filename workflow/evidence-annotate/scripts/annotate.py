@@ -44,6 +44,8 @@ FONTS = [  # CJK first: Windows, then Linux
 ]
 HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
+CAP_EDGE = 40  # px at 1280 wide from the frame's bottom to a pill caption (a chapter sits 12 and 16 px nearer)
+FLOAT_AMP = 1.0  # style.float drift, x Cua's own
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
@@ -64,6 +66,10 @@ CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
+BRANDS = {"claude": "#d97757", "copilot": "#8534f3", "figma": "#a259ff", "cursor": "#f54e00", "codex": "#10a37f"}  # a
+# label naming one of these takes its brand colour when style.color is unset (Claude, Copilot from their brand pages)
+TAG_D = 72  # px at 1280 wide from the tip to the name tag's near corner, clear of the largest arrow
+TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
 
@@ -259,7 +265,7 @@ def load_style(doc, preset="evidence"):
             continue
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
             sys.exit(f"events: style.{k} must be a number from {lo} to {hi}{' or \"aim\"' if k == 'tilt' else ''}, got {st[k]!r}")
-    given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
+    given, st["color"] = st["color"], rgb(st["color"] or BRANDS.get(st["label"].lower()) or COLORS[st["cursor"]])
     if st["color"] is None:
         sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
     if st["frame"] is not None:
@@ -617,7 +623,7 @@ class Painter:
             u = 42 * FX / 128 * self.s * k * 4
             pts, tip = svg_points(CUA_PATH), (55, 30)
         else:
-            u = 3.2 * self.s * k * 4
+            u = {"mac": 3.2, "figma": 4.5}[kind] * self.s * k * 4  # both about as tall as cua's
             pts, tip = SHAPES[kind], (0, 0)
         half = round(130 * u) if kind == "cua" else round(30 * u)  # room for the shape, its glow and any rotation
         size = (2 * half, 2 * half)
@@ -653,8 +659,8 @@ class Painter:
         return out
 
     def tag(self):
-        """Name tag (style.label) in the style colour, or None without a label."""
-        if not self.style["label"]:
+        """Name tag (style.label) in the style colour, or None without a label or on the mac arrow (no one's cursor)."""
+        if not self.style["label"] or self.style["cursor"] == "mac":
             return None
         if "tag" not in self.cache:
             s = self.s
@@ -704,6 +710,7 @@ class Painter:
         im, half = self.sprite(press_k(gs, t))
         rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
+        x0, y0 = x, y  # the lag below is the glide's, not the float's
         if self.style["float"] and 0 < since < np.inf:  # Cua's resting drift (not before the first move: since is inf): a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi
             x, y = x + np.sin(a) * 5 * FX * k_float(since), y + (6 * np.cos(a) - 6) * FX * k_float(since)
@@ -722,7 +729,10 @@ class Painter:
         self.paste(ov, im, X - half, Y - half)
         if tag:
             tx, ty = tag_at(*tag.size, rot, s)
-            self.paste(ov, tag, X + tx, Y + ty)
+            lx, ly = np.subtract(self.vp(x0 * s, y0 * s), self.vp(*np.multiply(track.at(t - TAG_LAG[0])[:2], s)))
+            if (m := np.hypot(lx, ly)) > TAG_LAG[1] * s:
+                lx, ly = lx / m * TAG_LAG[1] * s, ly / m * TAG_LAG[1] * s
+            self.paste(ov, tag, X + tx - lx, Y + ty - ly)
 
     def gesture(self, ov, d, g, t, pointer):
         """Rings at the press (and a drag's or hold's release), the drag trail, and for touch a fingertip dot."""
@@ -788,9 +798,12 @@ class Painter:
         edge it covers (for the key pill)."""
         s, kind = self.s, self.style["caption"]
         cap = self.capsule(n, total, step["title"])
+        alpha, rise, k = cap_in(alpha)
+        rise *= s
+        if k != 1:
+            cap = cap.resize((round(cap.width * k), round(cap.height * k)), Image.LANCZOS)
         if alpha < 1:
             cap = fade(cap, alpha)
-        rise = (1 - ease(alpha)) * 12 * s  # slides up as it fades in
         if kind == "callout" and anchor:
             X, Y = self.xy(*anchor)
             w, h = cap.size
@@ -802,10 +815,10 @@ class Painter:
             self.paste(ov, cap, min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h) + rise)
             return 0
         if kind == "chapter":
-            self.paste(ov, cap, 28 * s, 24 * s + rise)
+            self.paste(ov, cap, (CAP_EDGE - 12) * s, (CAP_EDGE - 16) * s + rise)
             return 0
-        self.paste(ov, cap, (self.w - cap.width) / 2, self.h - 40 * s - cap.height + rise)
-        return cap.height + 40 * s
+        self.paste(ov, cap, (self.w - cap.width) / 2, self.h - CAP_EDGE * s - cap.height + rise)
+        return cap.height + CAP_EDGE * s
 
     def keys(self, ov, item, t, alpha, bottom):
         """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
@@ -883,13 +896,18 @@ def tag_at(w, h, rot, s):
     arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
     a = np.arctan2(38, 29) + rot
     dx, dy = np.cos(a), np.sin(a)
-    cx, cy = 47.8 * s * dx + w / 2 * np.clip(2 * dx, -1, 1), 47.8 * s * dy + h / 2 * np.clip(2 * dy, -1, 1)
+    cx, cy = TAG_D * s * dx + w / 2 * np.clip(2 * dx, -1, 1), TAG_D * s * dy + h / 2 * np.clip(2 * dy, -1, 1)
     return round(cx - w / 2), round(cy - h / 2)
 
 
 def k_float(since):
     """The float eases in over its first second, so the pointer leaves its press point gently."""
-    return ease(since)
+    return ease(since) * FLOAT_AMP
+
+
+def cap_in(u):
+    """A step caption u of the way through its fade (0 hidden, 1 shown): (alpha, px it sits low, scale)."""
+    return u, (1 - ease(u)) * 12, 1
 
 
 def fade(im, alpha):
