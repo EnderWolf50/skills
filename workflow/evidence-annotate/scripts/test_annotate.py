@@ -338,6 +338,14 @@ def test_camera_holds_one_zoom_over_nearby_presses_and_stays_wide_for_spread_one
     assert all(cam.region(t(s)) is None for s in ("10:00:20.0", "10:00:20.5", "10:00:21.0"))  # too far apart to frame
 
 
+def test_camera_stays_wide_for_scattered_presses_in_a_busy_run():
+    t = lambda s: a.hms(s)
+    gs = a.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.2", "tap", 1180, 620),
+                     ev("10:00:06.4", "tap", 100, 620), ev("10:00:08.6", "tap", 1180, 100)])
+    cam = a.Camera(gs, [], SPACE, 1.5)
+    assert all(cam.region(t(f"10:00:{s:04.1f}")) is None for s in (1.5, 2.0, 3.0, 4.2, 6.4, 8.6, 9.5))
+
+
 def test_camera_fits_a_long_drag_and_restarts_when_time_goes_back():
     gs = a.gestures([ev("10:00:02.0", "swipe", 300, 360, x2=900, y2=360, ms=500)])
     cam = a.Camera(gs, [], SPACE, 2.5)

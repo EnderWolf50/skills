@@ -331,8 +331,9 @@ def fit_region(r, space):
     return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
-CAM_HOLD_S = 1.0  # the camera stays in this long after an action ends
-CAM_LOOK_S = 2.0  # presses starting this far ahead join the framing: the spring settles in ~0.55 s, then 1.5 s more
+CAM_HOLD_S = 1.0  # the camera stays in this long after a zoomed group's last action
+CAM_LEAD_S = 0.6  # starts moving this long before a group's first press: the spring settles in ~0.55 s
+CAM_GAP_S = 2.5  # a quieter gap than this ends a run of activity (Cap merges zooms closer than 2.5 s)
 CAM_PAD = 1.4  # the framed presses fill at most 1/CAM_PAD of the view
 CAM_WIDE = 1.15  # a fit looser than this stays at the full frame instead of a barely-there zoom
 SPRING = (200.0, 40.0, 2.25)  # stiffness, damping, mass: Cap's zoom spring
@@ -340,32 +341,49 @@ SPRING_DT = 1 / 120
 
 
 class Camera:
-    """Auto zoom on a spring (Cap's constants). The target frames every press from t to t + CAM_LOOK_S together, so
-    a run of nearby presses holds one zoom instead of pumping in and out; presses too spread out to fit at `scale`
-    keep the full frame. Typing keeps the last target. Regions in event space."""
+    """Auto zoom on a spring (Cap's constants). Presses group while they still fit one view at `scale`; a group
+    zooms when it holds two or more presses, a drag, or is the only one in its run of activity. A lone press amid
+    scattered ones keeps the full frame, so busy, spread-out work stays wide instead of pumping in and out; groups
+    side by side in time pan from one to the next. Typing keeps the view. Regions in event space."""
 
     def __init__(self, gs, keys, space, scale):
-        self.space, self.scale, self.gs, self.keys = space, scale, gs, keys
+        self.space = sw, sh = space
+        fit = lambda grp: min(scale, *(n / max((max(v) - min(v)) * CAM_PAD, 1) for n, v in (
+            (sw, [x for g in grp for _, x, _ in g["pts"]]), (sh, [y for g in grp for _, _, y in g["pts"]]))))
+        groups, run, end = [], 0, None  # [presses, run]
+        for g in sorted(gs, key=lambda g: g["t0"]):
+            busy = max([end] + [k["t1"] for k in keys if k["t0"] < g["t0"]]) if end is not None else None
+            if busy is None or g["t0"] - busy > CAM_GAP_S:
+                run += 1
+                groups.append([[g], run])
+            elif groups[-1][1] == run and fit(groups[-1][0] + [g]) >= min(scale, fit(groups[-1][0])) - 1e-6:
+                groups[-1][0].append(g)
+            else:
+                groups.append([[g], run])
+            end = max(end or g["t1"], g["t1"])
+        alone = lambda r: sum(1 for _, q in groups if q == r) == 1
+        self.spans = []  # (from, to, z, cx, cy): the target while t is inside
+        for i, (grp, r) in enumerate(groups):
+            z = fit(grp)
+            drag = len({(x, y) for g in grp for _, x, y in g["pts"]}) > 1
+            if z < CAM_WIDE or not (len(grp) > 1 or drag or alone(r)):
+                continue
+            t1 = max([g["t1"] for g in grp] + [k["t1"] for k in keys if grp[0]["t0"] <= k["t0"]
+                                                and (i + 1 == len(groups) or k["t0"] < groups[i + 1][0][0]["t0"])])
+            nxt = groups[i + 1][0][0]["t0"] - CAM_LEAD_S if i + 1 < len(groups) else t1 + CAM_HOLD_S
+            xs = [x for g in grp for _, x, _ in g["pts"]]
+            ys = [y for g in grp for _, _, y in g["pts"]]
+            self.spans.append((grp[0]["t0"] - CAM_LEAD_S, min(t1 + CAM_HOLD_S, nxt), z, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
         self.t0 = min([g["t0"] for g in gs] + [k["t0"] for k in keys], default=0) - 1
         self.reset()
 
     def reset(self):
         cx, cy = self.space[0] / 2, self.space[1] / 2
-        self.t, self.x, self.v, self.tgt = self.t0, [1.0, cx, cy], [0.0, 0.0, 0.0], (1.0, cx, cy)
+        self.t, self.x, self.v = self.t0, [1.0, cx, cy], [0.0, 0.0, 0.0]
 
     def target(self, t):
-        sw, sh = self.space
-        near = [g for g in self.gs if g["t1"] + CAM_HOLD_S >= t and g["t0"] <= t + CAM_LOOK_S]
-        if not near:
-            typing = any(k["t0"] <= t <= k["t1"] + CAM_HOLD_S for k in self.keys)
-            return self.tgt if typing else (1.0, self.x[1], self.x[2])  # zoom out where it is
-        xs = [x for g in near for _, x, _ in g["pts"]]
-        ys = [y for g in near for _, _, y in g["pts"]]
-        bw, bh = max(xs) - min(xs), max(ys) - min(ys)
-        z = min(self.scale, sw / max(bw * CAM_PAD, 1), sh / max(bh * CAM_PAD, 1))
-        if z < CAM_WIDE:
-            return 1.0, self.x[1], self.x[2]
-        return z, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
+        span = next((sp for sp in self.spans if sp[0] <= t < sp[1]), None)
+        return span[2:] if span else (1.0, self.x[1], self.x[2])  # zoom out where it is
 
     def region(self, t):
         """[x, y, w, h] shown at t, or None at full frame."""
@@ -374,11 +392,11 @@ class Camera:
         k, c, m = SPRING
         while self.t < t:
             self.t += SPRING_DT
-            self.tgt = self.target(self.t)
+            tgt = self.target(self.t)
             if self.x[0] <= 1.0005:  # aim while still wide, so the zoom goes straight in
-                self.x[1:], self.v[1:] = list(self.tgt[1:]), [0.0, 0.0]
+                self.x[1:], self.v[1:] = list(tgt[1:]), [0.0, 0.0]
             for i in range(3):
-                self.v[i] += (-k * (self.x[i] - self.tgt[i]) - c * self.v[i]) / m * SPRING_DT
+                self.v[i] += (-k * (self.x[i] - tgt[i]) - c * self.v[i]) / m * SPRING_DT
                 self.x[i] += self.v[i] * SPRING_DT
         z, cx, cy = self.x
         if z <= 1.0005:
