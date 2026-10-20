@@ -298,11 +298,7 @@ def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
     peak = max(tr.aim(t("10:00:03.0") + k / 60) for k in range(120))
     assert tr.aim(t("10:00:06.0")) == pytest.approx(mirror, abs=0.01) and peak > mirror * 1.1  # overshoots, settles
     assert tr.aim(t("10:00:09.5")) == pytest.approx(0, abs=0.01)  # the next target lies left: back
-    start, _, traj, _ = tr.glides[0]
-    fast = traj.arrival / 2  # mid glide over 800 px, near top speed
-    x, y, h, tj, lt = tr.at(start + fast)
-    assert abs(a.aim_turn(0.0, tj, lt, h)) > np.radians(60)  # leans toward Cua's full turn in a fast sweep
-    assert a.aim_turn(0.3, None, 0, a.cm.REST_HEADING) == 0.3  # at rest: the side's own turn
+    assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
 
 
 def test_lean_grows_with_speed():

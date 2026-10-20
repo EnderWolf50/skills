@@ -69,7 +69,6 @@ AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping
 AIM_TURN = np.radians(40)  # Figma's arrow turns 42 degrees
 AIM_MIN_DX = 60  # px of a 1280-wide frame: a target closer to straight above or below keeps the current side
 LEAN = (300, 1500)  # px/s of a 1280-wide frame: no lean into the motion below the first, the full tilt from the second
-AIM_LEAN = (600, 2000)  # aim: past the first speed the arrow turns on toward the motion, as far as Cua's at the second
 # Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
 # MIT) on its 128-unit canvas, tip at (55, 30), and the glow strokes under it: (width, opacity)
 CUA_PATH = ("M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 "
@@ -174,8 +173,8 @@ class Track:
             gap = g["t0"] - prev["t1"]
             if gap < 0.02 or np.hypot(b[0] - a[0], b[1] - a[1]) < 1:
                 continue
-            aim = style["tilt"] == "aim"  # plans Cua's full heading; Painter.cursor blends it in only when fast
-            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=1.0 if aim else style["tilt"],
+            aim = style["tilt"] == "aim"
+            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=0.0 if aim else style["tilt"],
                            tip_angle=TIPS[style["cursor"]], effects={"glow": style["glow"]})
             if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
                 traj = traj.scaled(gap / traj.arrival)
@@ -226,17 +225,6 @@ def lean(traj, t, heading):
     if traj is None:
         return rot
     return rot * ease((np.hypot(*traj.velocity_at(t)) - LEAN[0]) / (LEAN[1] - LEAN[0]))
-
-
-def aim_turn(rest, traj, t, heading):
-    """"tilt": "aim": the resting side's turn, blending toward Cua's full turn into the motion as the glide speeds
-    up between AIM_LEAN's bounds, so a fast sweep leans as far as Cua's cursor and settles back on the side."""
-    if traj is None:
-        return rest
-    full = (heading - cm.REST_HEADING + np.pi) % (2 * np.pi) - np.pi
-    k = ease((np.hypot(*traj.velocity_at(t)) - AIM_LEAN[0]) / (AIM_LEAN[1] - AIM_LEAN[0]))
-    d = (full - rest + np.pi) % (2 * np.pi) - np.pi  # the short way round
-    return rest + d * k
 
 
 def load_style(doc):
@@ -705,7 +693,7 @@ class Painter:
             gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
             self.radial(ov, *self.vp((gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s), g[2] * FX * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
-        rot = aim_turn(track.aim(t), traj, lt, heading) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
+        rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
         if self.style["float"] and 0 < since < np.inf:  # Cua's resting drift (not before the first move: since is inf): a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi
