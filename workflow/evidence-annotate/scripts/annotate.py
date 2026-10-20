@@ -70,10 +70,10 @@ CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
-TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip at rest, its height; traced off
-    # Figma's (it hangs at the arrow's corner, taller than the arrow) and Cua's (beside the arrow, rounder and glowing, dark text)
-    "figma": {"at": (58, 60), "h": 80, "glow": False}, "cua": {"at": (46, 33), "h": 52, "glow": True},
-    "mac": {"at": (36, 52), "h": 50, "glow": False}}
+TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip at rest; traced off Figma's (at the
+    # arrow's corner) and Cua's (beside the arrow, rounder and glowing, dark text)
+    "figma": {"at": (58, 60), "glow": False}, "cua": {"at": (46, 33), "glow": True}, "mac": {"at": (36, 52), "glow": False}}
+TAG_H = 64  # name tag height, the same for every cursor
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
@@ -584,7 +584,7 @@ class Painter:
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.fx = FX * self.style["size"]
         self.tag_spec = TAG[self.style["cursor"]]
-        self.tag_h = self.tag_spec["h"] * s * self.style["size"]
+        self.tag_h = TAG_H * s * self.style["size"]
         self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
