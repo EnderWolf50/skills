@@ -51,10 +51,14 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
-CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
-                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
+CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring"},
+                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
+CLICKS = {"ring": 0.8, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
+# ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
+SPARK_S = 0.25
 PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
     "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
     "tutorial": {"zoom": True, "dot": True},  # steps for someone to follow
@@ -255,6 +259,8 @@ def load_style(doc, preset="evidence"):
     st.update({k: v for k, v in CURSOR_MOTION[st["cursor"]].items() if st[k] is None})
     if not isinstance(st["glow"], bool):
         sys.exit(f"events: style.glow must be true or false, got {st['glow']!r}")
+    if st["click"] not in CLICKS:
+        sys.exit(f"events: style.click must be one of {', '.join(CLICKS)}, got {st['click']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
     if not isinstance(st["dot"], bool):
@@ -288,10 +294,10 @@ def rgb(c):
         return None
 
 
-def press_k(gs, t):
-    """Pointer scale at t: PRESS_K while pressed, eased over PRESS_S before the press and after the release."""
+def press_k(gs, t, k=PRESS_K):
+    """Pointer scale at t: k while pressed, eased over PRESS_S before the press and after the release."""
     p = max((min(ease((t - g["t0"] + PRESS_S) / PRESS_S), ease((g["t1"] + PRESS_S - t) / PRESS_S)) for g in gs), default=0)
-    return 1 - (1 - PRESS_K) * p
+    return 1 - (1 - k) * p
 
 
 KEY_HOLD_S = 1.0  # a key pill stays this long after its last key
@@ -611,6 +617,16 @@ class Painter:
         rgb = (np.multiply.outer(ae, edge) + np.multiply.outer(af, fill)) / np.maximum(a, 1e-6)[..., None]
         ov.alpha_composite(Image.fromarray(np.dstack([rgb, a * 255]).round().astype(np.uint8), "RGBA"), (x0, y0))
 
+    def sparks(self, d, X, Y, u):
+        """Cua's press: three short strokes flying off the tip, away from the body, fading over SPARK_S (u 0..1)."""
+        L = 62 * self.fx / FX * self.s  # the arrow's length
+        a0 = TIPS[self.style["cursor"]]
+        for da in (-0.7, 0, 0.7):
+            v = np.array([np.cos(a0 + da), np.sin(a0 + da)])
+            r0, r1 = (0.12 + 0.2 * u) * L, (0.32 + 0.12 * u) * L
+            d.line([(X + v[0] * r0, Y + v[1] * r0), (X + v[0] * r1, Y + v[1] * r1)], fill=(*self.color, round(255 * (1 - u) ** 0.7)),
+                   width=max(1, round(0.045 * L)))
+
     def ring(self, ov, X, Y, age):
         """Click ring: grows to 100 px (at 1280 wide) with ease-out cubic and fades over RING_S after the press."""
         p = age / RING_S
@@ -725,7 +741,7 @@ class Painter:
         if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx))):
             gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx)  # glow sits off the body by self.fx x Cua's offset
             self.radial(ov, *self.vp((gx + (g[0] - gx) * self.fx) * s, (gy + (g[1] - gy) * self.fx) * s), g[2] * self.fx * s, fx, g[3])
-        im, half = self.sprite(press_k(gs, t))
+        im, half = self.sprite(press_k(gs, t, CLICKS[self.style["click"]]))
         rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
         x0, y0 = x, y  # the lag below is the glide's, not the float's
@@ -763,9 +779,13 @@ class Painter:
             a = 1 - max(0, t - t1) / 0.5
             line = [self.xy(px, py) for pt, px, py in g["pts"] if pt <= t] + [(X, Y)]
             d.line(line, fill=(*self.color, int(140 * a)), width=max(2, round(12 * s)), joint="curve")
-        self.ring(ov, *self.xy(*pos_at(g, t0)), t - t0)
-        if g["kind"] != "tap":
-            self.ring(ov, X, Y, t - t1)
+        click = self.style["click"] if pointer == "mouse" else "ring"
+        if click == "ring":
+            self.ring(ov, *self.xy(*pos_at(g, t0)), t - t0)
+            if g["kind"] != "tap":
+                self.ring(ov, X, Y, t - t1)
+        elif click == "sparks" and 0 <= t - t0 <= SPARK_S:
+            self.sparks(d, *self.xy(*pos_at(g, t0)), (t - t0) / SPARK_S)
         if pointer == "touch":
             vis = max(0.0, min(1, (t1 + 0.3 - t) / 0.3))  # appears on the press itself: a finger has no hover
             if t >= t0 and vis > 0:

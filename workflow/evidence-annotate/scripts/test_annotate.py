@@ -321,7 +321,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -475,3 +475,12 @@ def test_name_tag_trails_the_arrow():
     x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(60, 58), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
     assert y > 0 and abs(x + w - np.hypot(58, 60) / 3) <= 1
 
+
+
+def test_cua_click_sparks_off_the_tip_without_a_ring():
+    from PIL import Image, ImageDraw
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "cua"}}))
+    g = a.gestures([ev("10:00:01.0", "tap", 640, 360)])[0]
+    ov = Image.new("RGBA", (1280, 720))
+    p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + 0.05, "mouse")
+    assert ov.getbbox() is not None and ov.getbbox()[2] < 640 + 5  # strokes up and left of the tip, no ring round it
