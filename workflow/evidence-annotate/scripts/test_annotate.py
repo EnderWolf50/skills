@@ -319,7 +319,7 @@ def test_float_waits_for_the_first_move():
 
 def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
-    assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is False  # figma draws no drag trail
+    assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is None  # resolved by pointer: a mouse cursor draws no drag trail
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
     for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}, {"label_text": "white"}):
         with pytest.raises(SystemExit):

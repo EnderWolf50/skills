@@ -53,10 +53,9 @@ PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
          "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
-CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks", "trail": False},  # Cua's own swing; an
-                 # upright arrow reads calmer; Figma and Cua draw no drag trail
-                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring", "trail": True},
-                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink", "trail": False}}
+CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring"},
+                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
 CLICKS = {"ring": 0.8, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
 # ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
 SPARK_S = 0.25
@@ -781,7 +780,8 @@ class Painter:
         s = self.s
         t0, t1 = g["t0"], g["t1"]
         X, Y = self.xy(*pos_at(g, t))
-        if g["kind"] == "drag" and self.style["trail"] and t0 <= t <= t1 + 0.5:  # trail from the start to the finger, fading after release
+        trail = pointer != "mouse" if self.style["trail"] is None else self.style["trail"]  # no mouse cursor draws one
+        if g["kind"] == "drag" and trail and t0 <= t <= t1 + 0.5:  # trail from the start to the finger, fading after release
             a = 1 - max(0, t - t1) / 0.5
             line = [self.xy(px, py) for pt, px, py in g["pts"] if pt <= t] + [(X, Y)]
             d.line(line, fill=(*self.color, int(140 * a)), width=max(2, round(12 * s)), joint="curve")
