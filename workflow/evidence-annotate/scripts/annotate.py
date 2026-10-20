@@ -13,7 +13,7 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
           or {"t","kind":"key","keys":"Ctrl+S"} or {"t","kind":"type","text":"...","ms"?}]}; coordinates in
           `space`, mapped to the frame by its own size. swipe runs x,y -> x2,y2 over ms; down/up bracket a press
           (up may carry x,y = the release point)
---steps   [{"from","to","title","note"?,"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
+--steps   [{"from","to","title","note"? (not drawn: for the report),"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
 --masks   {"space":[w,h],"masks":[{"template":"a.png","threshold":0.8,"boxes":[[x,y,w,h]]}]}: a box is blacked out
           while its template matches (2 fps scan, +-1 s around each hit); template paths relative to the masks file
 --from/--to  cut a clip; --frames also saves those annotated frames as PNG next to OUT; --no-video writes only them
@@ -516,7 +516,6 @@ class Painter:
                 pass
             return f
 
-        self.f_title, self.f_note = font(round(26 * s), 700), font(round(17 * s), 400)
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.f_tag = font(round(22 * s), 600)
         self.f_key = font(round(22 * s), 600)
@@ -704,21 +703,16 @@ class Painter:
             d.text((X0 + 7 * s, ly + 11 * s), label, font=self.f_label, fill=(20, 20, 24, int(255 * alpha)), anchor="lm")
 
     # --- caption panel (cached per text, faded by alpha)
-    def capsule(self, n, total, title, note):
-        """The pill / chapter caption: a translucent dark capsule, "n/total", a hairline, the title; the note,
-        when there is one, as a smaller second line."""
-        key = ("capsule", n, total, title, note)
+    def capsule(self, n, total, title):
+        """The pill / chapter caption: a translucent dark capsule, "n/total", a hairline, the title."""
+        key = ("capsule", n, total, title)
         if key not in self.cache:
             s = self.s
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             num = f"{n}/{total}"
             nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
-            note = note or ""
-            while note and probe.textlength(note, font=self.f_note) > 900 * s:
-                note = note[:-2].rstrip() + "…" if not note.endswith("…") else note[:-2] + "…"
             pad, gap = 32 * s, 16 * s
-            w = round(pad * 2 + nw + gap * 2 + max(tw, probe.textlength(note, font=self.f_note)))
-            h = round((92 if note else 64) * s)
+            w, h = round(pad * 2 + nw + gap * 2 + tw), round(64 * s)
             im = Image.new("RGBA", (w, h))
             d = ImageDraw.Draw(im)
             d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(h / 2, 32 * s)), fill=(15, 17, 24, 170))
@@ -727,21 +721,17 @@ class Painter:
             lx = pad + nw + gap
             d.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
             d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
-            if note:
-                d.text((lx + gap, cy + 34 * s), note, font=self.f_note, fill=(205, 214, 228, 230), anchor="lm")
             self.cache[key] = im
         return self.cache[key]
 
-    def callout(self, n, title, note):
-        """The callout card: white, soft shadow, "STEP n" in the accent colour over the title (and the note);
-        (image, shadow margin)."""
-        key = ("callout", n, title, note)
+    def callout(self, n, title):
+        """The callout card: white, soft shadow, "STEP n" in the accent colour over the title; (image, shadow margin)."""
+        key = ("callout", n, title)
         if key not in self.cache:
             s = self.s
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             pad, m = 28 * s, round(32 * s)
-            w = round(2 * pad + max(probe.textlength(title, font=self.f_cap), probe.textlength(note or "", font=self.f_note)))
-            h = round((112 if note else 84) * s)
+            w, h = round(2 * pad + probe.textlength(title, font=self.f_cap)), round(84 * s)
             im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
             shade = Image.new("L", im.size)
             ImageDraw.Draw(shade).rounded_rectangle([m, m + 8 * s, m + w, m + h + 8 * s], radius=round(20 * s), fill=255)
@@ -750,8 +740,6 @@ class Painter:
             d.rounded_rectangle([m, m, m + w, m + h], radius=round(20 * s), fill=(255, 255, 255, 255))
             d.text((m + pad, m + 30 * s), f"STEP {n}", font=self.f_cap_n, fill=(*self.color, 255), anchor="lm")
             d.text((m + pad, m + 62 * s), title, font=self.f_cap, fill=(20, 24, 32, 255), anchor="lm")
-            if note:
-                d.text((m + pad, m + 92 * s), note, font=self.f_note, fill=(90, 98, 112, 255), anchor="lm")
             self.cache[key] = (im, m)
         return self.cache[key]
 
@@ -759,7 +747,7 @@ class Painter:
         """Draw the step caption in style.caption; returns how much of the bottom edge it covers (for the key pill)."""
         s, kind = self.s, self.style["caption"]
         if kind == "callout" and anchor:
-            card, m = self.callout(n, step["title"], step.get("note"))
+            card, m = self.callout(n, step["title"])
             X, Y = self.xy(*anchor)
             w, h = card.width - 2 * m, card.height - 2 * m
             gap, edge = 40 * s, 16 * s
@@ -783,7 +771,7 @@ class Painter:
                 d.polygon([(ax - k, ay), (ax, tip), (ax + k, ay)], fill=(255, 255, 255, a))
             self.paste(ov, card, x - m, y - m)
             return 0
-        cap = self.capsule(n, total, step["title"], step.get("note"))
+        cap = self.capsule(n, total, step["title"])
         if alpha < 1:
             cap = fade(cap, alpha)
         rise = (1 - ease(alpha)) * 12 * s  # slides up as it fades in
