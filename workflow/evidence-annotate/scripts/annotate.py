@@ -50,7 +50,7 @@ ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
-STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
+STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": True, "motion": "signature_arc", "arc": None,
          "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
@@ -277,6 +277,10 @@ def load_style(doc, preset="evidence"):
     given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
     if st["color"] is None:
         sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
+    for k in ("label_color", "label_text"):  # None: the pointer colour; white text, Cua's dark
+        if st[k] is not None and (c := rgb(st[k])) is None:
+            sys.exit(f"events: style.{k} must be #rrggbb, got {st[k]!r}")
+        st[k] = st[k] and c
     if st["frame"] is not None:
         stops = st["frame"] if isinstance(st["frame"], list) else [st["frame"]]
         if not 1 <= len(stops) <= 2 or None in (stops := [rgb(c) for c in stops]):
@@ -695,15 +699,16 @@ class Painter:
             r = round((0.3 if self.tag_spec["glow"] else 0.1) * h)  # Cua's rounder, Figma's squarer
             im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
             body = [m, m, m + w - 1, m + h - 1]
-            text = (255, 255, 255, 255)
+            fill = self.style["label_color"] or self.color
+            text = (*(self.style["label_text"] or (255, 255, 255)), 255)
             if self.tag_spec["glow"]:  # Cua's: a soft glow in the colour, dark text
                 glow = Image.new("RGBA", im.size)
-                ImageDraw.Draw(glow).rounded_rectangle(body, radius=r, fill=(*self.color, 140))
+                ImageDraw.Draw(glow).rounded_rectangle(body, radius=r, fill=(*fill, 140))
                 im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(0.12 * h)))
-                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255))
-                text = (*(round(c * 0.18) for c in self.color), 255)
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*fill, 255))
+                text = (*(self.style["label_text"] or [round(c * 0.18) for c in fill]), 255)
             else:
-                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255))
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*fill, 255))
             ImageDraw.Draw(im).text((m + w / 2, m + h / 2), self.style["label"], font=self.f_tag, fill=text, anchor="mm")
             self.cache["tag"] = (im, m)
         return self.cache["tag"]

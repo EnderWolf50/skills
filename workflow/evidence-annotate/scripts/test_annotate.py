@@ -321,7 +321,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}, {"label_text": "white"}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -484,3 +484,9 @@ def test_cua_click_sparks_off_the_tip_without_a_ring():
     ov = Image.new("RGBA", (1280, 720))
     p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + 0.05, "mouse")
     assert ov.getbbox() is not None and ov.getbbox()[2] < 640 + 5  # strokes up and left of the tip, no ring round it
+
+
+def test_label_colours_override_the_pointer_colour():
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "figma", "label": "Kerati", "label_color": "#ffffff", "label_text": "#000000"}}))
+    im, m = p.tag()
+    assert im.getpixel((m + 2, m + im.height // 4))[:3] == (255, 255, 255)  # the tag's fill, not the pointer's blue
