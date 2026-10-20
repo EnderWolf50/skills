@@ -75,12 +75,13 @@ PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's scre
 
 # pointer outlines in pointer units (3.2 px at 1280 wide), tip at 0,0, and where each tip points at rest
 SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
-          "figma": [(0, 0), (3.82, 13.41), (6.87, 8.11), (12.66, 6.06)]}  # figma: a dart symmetric about the
-# diagonal, notch three quarters in (the "Figma Cursors" community file, matching Figma's own on screen)
-TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-0.766, -0.643)), "cua": cm.TIP_ANGLE}
+          "figma": [(0, 0), (4.61, 13.22), (6.24, 6.56), (12.94, 4.73)]}  # figma: fitted to the cursor image
+# Figma's editor sets on its canvas: sides at 71 and 20 degrees, the notch 0.65 in, corners rounded (ROUND)
+ROUND = {"figma": 0.42}  # corner radius in pointer units
+TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-0.713, -0.701)), "cua": cm.TIP_ANGLE}
 AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping ratio): about 25 % overshoot, as in
 # Figma's own cursor animation, which turns the arrow about its tip toward a target on its right
-AIM_TURN = np.radians(60)  # aimed, Figma's dart has its sides at 85 and 135 degrees (from its 25 and 74 at rest)
+AIM_TURN = np.radians(64)  # aimed, Figma's dart has its sides at 85 and 135 degrees (from its 20 and 71 at rest)
 AIM_MIN_DX = 60  # px of a 1280-wide frame: a target closer to straight above or below keeps the current side
 LEAN = (300, 1500)  # px/s of a 1280-wide frame: no lean into the motion below the first, the full tilt from the second
 # Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
@@ -633,6 +634,9 @@ class Painter:
         mask = Image.new("L", size)
         poly = [(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts]
         ImageDraw.Draw(mask).polygon(poly, fill=255)
+        if r := round(ROUND.get(kind, 0) * u):  # round every corner, the notch too: close, then open
+            disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+            mask = Image.fromarray(cv2.morphologyEx(cv2.morphologyEx(np.asarray(mask), cv2.MORPH_CLOSE, disc), cv2.MORPH_OPEN, disc))
         m = np.asarray(mask)
         outside = cv2.distanceTransform(255 - m, cv2.DIST_L2, 5)  # pixels to the shape, 0 inside
         inside = cv2.distanceTransform(m, cv2.DIST_L2, 5)  # pixels to the edge, 0 outside
@@ -650,10 +654,10 @@ class Painter:
             im.paste((255, 255, 255, 255), (0, 0), grow(2.5))
             im.paste((*rgb, 255), (0, 0), grow(-2.5))
         else:  # drop shadow, white rim outside the outline, then the fill
-            edge = {"mac": 1.3, "figma": 1.2}[kind]
+            edge = {"mac": 1.3, "figma": 1.1}[kind]
             border = grow(edge)
             shadow = Image.new("RGBA", size, (0, 0, 0))
-            a, blur = {"mac": (0.3, 4), "figma": (0.25, 3)}[kind]
+            a, blur = {"mac": (0.3, 4), "figma": (0.35, 3)}[kind]
             shadow.putalpha(border.filter(ImageFilter.GaussianBlur(blur * u / 3.2)).point(lambda v: int(v * a)))
             im.alpha_composite(shadow, (0, round(u)))
             im.paste((255, 255, 255, 255), (0, 0), border)
