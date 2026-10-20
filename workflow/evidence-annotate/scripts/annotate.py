@@ -44,14 +44,15 @@ FONTS = [  # CJK first: Windows, then Linux
 ]
 HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
-CAP_EDGE = 40  # px at 1280 wide from the frame's bottom to a pill caption (a chapter sits 12 and 16 px nearer)
-FLOAT_AMP = 1.0  # style.float drift, x Cua's own
+CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter caption
+FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
+TAG_K = 1.0  # name tag scale
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "size": 1, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
@@ -66,14 +67,15 @@ CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
-TAG_D = 92  # px at 1280 wide (FX 2.5) from the tip to the name tag's near corner: past the arrow by a third of it, as Figma's
+TAG_D = {"mac": 92, "figma": 92, "cua": 74}  # px at 1280 wide (size 1) from the tip to the name tag's near corner:
+# past the arrow by a third of it, as Figma's; cua's rounder body reaches less far
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
 
 # pointer outlines in pointer units (3.2 px at 1280 wide), tip at 0,0, and where each tip points at rest
 SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
-          "figma": [(0, 0), (0, 14), (4, 10.5), (10.5, 10.5)]}
+          "figma": [(0, 0), (0, 14), (4.4, 9.6), (10.9, 9.2)]}  # figma: traced off Figma's own, its notch high
 TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-1, -0.75)), "cua": cm.TIP_ANGLE}
 AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping ratio): about 25 % overshoot, as in
 # Figma's own cursor animation, which turns the arrow about its tip toward a target on its right
@@ -258,7 +260,7 @@ def load_style(doc, preset="evidence"):
         sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
         st["zoom"] = ZOOM_DEFAULT if st["zoom"] else 0
-    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4), ("idle_fade", 0, 600)):
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("size", 0.3, 2), ("zoom", 0, 4), ("idle_fade", 0, 600)):
         if k == "tilt" and st[k] == "aim":
             continue
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
@@ -571,7 +573,8 @@ class Painter:
             return f
 
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
-        self.f_tag = font(round(22 * s), 600)
+        self.f_tag = font(round(22 * s * TAG_K), 600)
+        self.fx = FX * self.style["size"]
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
@@ -617,11 +620,11 @@ class Painter:
         if ("sprite", k) in self.cache:
             return self.cache[("sprite", k)]
         kind, rgb = self.style["cursor"], self.color
-        if kind == "cua":  # 128-unit canvas shown 42 pt x FX, tip at (55, 30)
-            u = 42 * FX / 128 * self.s * k * 4
+        if kind == "cua":  # 128-unit canvas shown 42 pt x FX x style.size, tip at (55, 30)
+            u = 42 * self.fx / 128 * self.s * k * 4
             pts, tip = svg_points(CUA_PATH), (55, 30)
         else:
-            u = {"mac": 3.2, "figma": 4.5}[kind] * FX / 2.5 * self.s * k * 4  # both about as tall as cua's
+            u = {"mac": 3.2, "figma": 4.5}[kind] * self.fx / FX * self.s * k * 4  # both about as tall as cua's
             pts, tip = SHAPES[kind], (0, 0)
         half = round(130 * u) if kind == "cua" else round(30 * u)  # room for the shape, its glow and any rotation
         size = (2 * half, 2 * half)
@@ -646,8 +649,7 @@ class Painter:
             im.paste((*rgb, 255), (0, 0), grow(-2.5))
         else:  # drop shadow, white rim outside the outline, then the fill
             edge = {"mac": 1.3, "figma": 1.2}[kind]
-            border = Image.new("L", size)
-            ImageDraw.Draw(border).polygon(mitre(poly, edge * u), fill=255)
+            border = grow(edge)
             shadow = Image.new("RGBA", size, (0, 0, 0))
             a, blur = {"mac": (0.3, 4), "figma": (0.25, 3)}[kind]
             shadow.putalpha(border.filter(ImageFilter.GaussianBlur(blur * u / 3.2)).point(lambda v: int(v * a)))
@@ -666,11 +668,11 @@ class Painter:
             s = self.s
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             tw = probe.textlength(self.style["label"], font=self.f_tag)
-            w, h = round(tw + 26 * s), round(35 * s)
+            w, h = round(tw + 26 * s * TAG_K), round(35 * s * TAG_K)
             im = Image.new("RGBA", (w, h))
             d = ImageDraw.Draw(im)
-            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s), fill=(*self.color, 255))
-            d.text((13 * s, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
+            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(10 * s * TAG_K), fill=(*self.color, 255))
+            d.text((13 * s * TAG_K, h / 2), self.style["label"], font=self.f_tag, fill=(255, 255, 255, 255), anchor="lm")
             self.cache["tag"] = im
         return self.cache["tag"]
 
@@ -701,19 +703,19 @@ class Painter:
         if traj and "trail" in traj.effects:
             layer = Image.new("RGBA", (self.w, self.h))
             d = ImageDraw.Draw(layer)
-            for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * FX):
-                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * FX * s)), joint="curve")
+            for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * self.fx):
+                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * self.fx * s)), joint="curve")
             ov.alpha_composite(layer)
-        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX))):
-            gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
-            self.radial(ov, *self.vp((gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s), g[2] * FX * s, fx, g[3])
+        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx))):
+            gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx)  # glow sits off the body by self.fx x Cua's offset
+            self.radial(ov, *self.vp((gx + (g[0] - gx) * self.fx) * s, (gy + (g[1] - gy) * self.fx) * s), g[2] * self.fx * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
         rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
         x0, y0 = x, y  # the lag below is the glide's, not the float's
         if self.style["float"] and 0 < since < np.inf:  # Cua's resting drift (not before the first move: since is inf): a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi
-            x, y = x + np.sin(a) * 5 * FX * k_float(since), y + (6 * np.cos(a) - 6) * FX * k_float(since)
+            x, y = x + np.sin(a) * 5 * self.fx * k_float(since), y + (6 * np.cos(a) - 6) * self.fx * k_float(since)
             rot += np.radians(2.5) * np.sin(a) * k_float(since)
         alpha = 1.0
         if self.style["idle_fade"] and since > 0:
@@ -728,10 +730,15 @@ class Painter:
         X, Y = self.vp(x * s, y * s)
         self.paste(ov, im, X - half, Y - half)
         if tag:
-            tx, ty = tag_at(*tag.size, rot, s)
+            tx, ty = tag_at(*tag.size, rot, s * self.fx / FX, TAG_D[self.style['cursor']])
             lx, ly = np.subtract(self.vp(x0 * s, y0 * s), self.vp(*np.multiply(track.at(t - TAG_LAG[0])[:2], s)))
             if (m := np.hypot(lx, ly)) > TAG_LAG[1] * s:
                 lx, ly = lx / m * TAG_LAG[1] * s, ly / m * TAG_LAG[1] * s
+            tw, th = tag.size
+            if not 0 <= X + tx <= self.w - tw:  # off the frame: the mirror side of the tip
+                tx = -tx - tw
+            if not 0 <= Y + ty <= self.h - th:
+                ty = -ty - th
             self.paste(ov, tag, X + tx - lx, Y + ty - ly)
 
     def gesture(self, ov, d, g, t, pointer):
@@ -815,7 +822,7 @@ class Painter:
             self.paste(ov, cap, min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h) + rise)
             return 0
         if kind == "chapter":
-            self.paste(ov, cap, (CAP_EDGE - 12) * s, (CAP_EDGE - 16) * s + rise)
+            self.paste(ov, cap, CAP_EDGE * s, CAP_EDGE * s + rise)
             return 0
         self.paste(ov, cap, (self.w - cap.width) / 2, self.h - CAP_EDGE * s - cap.height + rise)
         return cap.height + CAP_EDGE * s
@@ -891,31 +898,18 @@ class Framer:
         return out
 
 
-def tag_at(w, h, rot, s):
+def tag_at(w, h, rot, s, gap=TAG_D["figma"]):
     """Top-left of a w x h name tag off the tip, behind the arrow as it turns by rot (Figma's tags trail the
     arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
     a = np.arctan2(38, 29) + rot
     dx, dy = np.cos(a), np.sin(a)
-    d = TAG_D * FX / 2.5 * s
+    d = gap * s
     # the tag switches side once the body leans past 17° off straight down (dx 0.3, about where "aim" turns it):
     # Figma's then hangs below the arrow aimed up right, its right edge a third of the gap past the tip
     side = np.clip((dx - 0.3) * 10, -1, 1)
     cx, cy = d * dx + w / 2 * side + d / 3 * max(0, -side), d * dy + h / 2 * np.clip(dy * 10, -1, 1)
     return round(cx - w / 2), round(cy - h / 2)
 
-
-def mitre(pts, e):
-    """The closed polygon pts grown outward by e with sharp (mitred) corners."""
-    p = np.array(pts, float)
-    n = len(p)
-    area = sum(p[i, 0] * p[(i + 1) % n, 1] - p[(i + 1) % n, 0] * p[i, 1] for i in range(n))
-    out = []
-    for i in range(n):
-        a, b, c = p[i - 1], p[i], p[(i + 1) % n]
-        n1, n2 = (np.array([d[1], -d[0]]) / np.hypot(*d) * np.sign(area) for d in (b - a, c - b))
-        m = n1 + n2
-        out.append(tuple(b + m / np.dot(m, n1) * e))  # where the two offset edges meet
-    return out
 
 
 def k_float(since):

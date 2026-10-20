@@ -321,7 +321,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -475,6 +475,10 @@ def test_name_tag_trails_the_arrow():
     assert y > 0 and abs(x + w - 92 / 3) <= 1
 
 
-def test_mitre_keeps_corners_sharp():
-    sq = a.mitre([(0, 0), (10, 0), (10, 10), (0, 10)], 1)
-    assert np.allclose(sorted(sq), sorted([(-1, -1), (11, -1), (11, 11), (-1, 11)]))
+def test_name_tag_flips_off_the_frame_edge():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "figma", "label": "Claude"}}))
+    gs = a.gestures([ev("10:00:01.0", "tap", 1270, 710)])
+    ov = Image.new("RGBA", (1280, 720))
+    p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
+    assert ov.getpixel((1270 - 56 - 10, 710 - 73 - 17))[3] > 200  # mirrored above left of the tip
