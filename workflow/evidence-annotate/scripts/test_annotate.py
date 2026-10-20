@@ -314,6 +314,13 @@ def test_lean_grows_with_speed():
     assert a.lean(None, 0, a.cm.REST_HEADING) == 0
 
 
+def test_float_waits_for_the_first_move():
+    from PIL import Image
+    gs = a.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.0", "tap", 500, 300)])
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"float": True}}))
+    p.cursor(Image.new("RGBA", (1280, 720)), track(gs, float=True), gs, a.hms("10:00:00.5"))  # raised on NaN before
+
+
 def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True

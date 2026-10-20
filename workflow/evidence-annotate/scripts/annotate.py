@@ -707,7 +707,7 @@ class Painter:
         im, half = self.sprite(press_k(gs, t))
         rot = aim_turn(track.aim(t), traj, lt, heading) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
-        if self.style["float"] and since > 0:  # Cua's resting drift: a slow 4 s loop, a few points and degrees
+        if self.style["float"] and 0 < since < np.inf:  # Cua's resting drift (not before the first move: since is inf): a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi
             x, y = x + np.sin(a) * 5 * FX * k_float(since), y + (6 * np.cos(a) - 6) * FX * k_float(since)
             rot += np.radians(2.5) * np.sin(a) * k_float(since)
