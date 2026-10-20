@@ -325,24 +325,25 @@ def test_gestures_skip_key_events():
     assert len(a.gestures([ev("10:00:01.0", "key", keys="Enter"), ev("10:00:02.0", "tap", 1, 1)])) == 1
 
 
-def test_camera_zooms_in_before_a_burst_pans_away_and_out_after():
-    gs = a.gestures([ev("10:00:02.0", "tap", 200, 200), ev("10:00:03.0", "tap", 220, 210),  # close: no pan
-                     ev("10:00:04.0", "tap", 1100, 600), ev("10:00:20.0", "tap", 640, 360)])
-    cam = a.Camera(gs, [], SPACE, 2.0)
-    assert len(cam.bursts) == 2 and len(cam.bursts[0][2]) == 2  # the 220,210 press stayed in view
+def test_camera_holds_one_zoom_over_nearby_presses_and_stays_wide_for_spread_ones():
     t = lambda s: a.hms(s)
+    gs = a.gestures([ev("10:00:02.0", "tap", 200, 200), ev("10:00:03.0", "tap", 300, 260),
+                     ev("10:00:04.0", "tap", 260, 300), ev("10:00:20.0", "tap", 100, 100), ev("10:00:21.0", "tap", 1180, 620)])
+    cam = a.Camera(gs, [], SPACE, 1.5)
     assert cam.region(t("10:00:00.5")) is None
-    x, y, w, h = cam.region(t("10:00:02.0"))
-    assert (w, h) == (640, 360) and x <= 200 <= x + w and y <= 200 <= y + h
-    x, y, w, h = cam.region(t("10:00:04.0"))
-    assert x + w == 1280 and y + h == 720  # panned to the far corner, clamped inside the frame
-    assert cam.region(t("10:00:10.0")) is None  # out between bursts
+    for s in ("10:00:02.0", "10:00:03.0", "10:00:04.0"):  # zoomed in on the cluster the whole time, no pumping
+        x, y, w, h = cam.region(t(s))
+        assert w == pytest.approx(1280 / 1.5, abs=8) and x <= 200 and 300 <= x + w
+    assert cam.region(t("10:00:10.0")) is None  # out between the groups
+    assert all(cam.region(t(s)) is None for s in ("10:00:20.0", "10:00:20.5", "10:00:21.0"))  # too far apart to frame
 
 
-def test_camera_fits_a_long_drag():
-    gs = a.gestures([ev("10:00:02.0", "swipe", 100, 360, x2=1100, y2=360, ms=500)])
-    _, _, w, _ = a.Camera(gs, [], SPACE, 2.5).region(a.hms("10:00:02.3"))
-    assert w >= 1000 * 1.4 - 1 or w == 1280
+def test_camera_fits_a_long_drag_and_restarts_when_time_goes_back():
+    gs = a.gestures([ev("10:00:02.0", "swipe", 300, 360, x2=900, y2=360, ms=500)])
+    cam = a.Camera(gs, [], SPACE, 2.5)
+    _, _, w, _ = cam.region(a.hms("10:00:02.3"))
+    assert w == pytest.approx(600 * a.CAM_PAD, rel=0.02)
+    assert cam.region(a.hms("10:00:00.0")) is None
 
 
 def test_rest_counts_from_the_last_move_to_the_next():

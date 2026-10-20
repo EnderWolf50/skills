@@ -331,55 +331,60 @@ def fit_region(r, space):
     return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
-CAM_HOLD_S = 1.0  # the camera stays in this long after the last action of a burst
-CAM_GAP_S = CAM_HOLD_S + 2 * ZOOM_S + 0.5  # a quieter gap than this zooms out between bursts
-CAM_PAN_S = 0.6  # pan to the next press, arriving just before it
-CAM_KEEP = 0.6  # a press inside this middle share of the view does not move the camera
+CAM_HOLD_S = 1.0  # the camera stays in this long after an action ends
+CAM_LOOK_S = 2.0  # presses starting this far ahead join the framing: the spring settles in ~0.55 s, then 1.5 s more
+CAM_PAD = 1.4  # the framed presses fill at most 1/CAM_PAD of the view
+CAM_WIDE = 1.15  # a fit looser than this stays at the full frame instead of a barely-there zoom
+SPRING = (200.0, 40.0, 2.25)  # stiffness, damping, mass: Cap's zoom spring
+SPRING_DT = 1 / 120
 
 
 class Camera:
-    """Auto zoom: eases in to `scale` before each burst of actions, pans to presses that leave the middle of
-    the view, fits a drag's whole path, and eases out CAM_HOLD_S after the burst. Regions in event space."""
+    """Auto zoom on a spring (Cap's constants). The target frames every press from t to t + CAM_LOOK_S together, so
+    a run of nearby presses holds one zoom instead of pumping in and out; presses too spread out to fit at `scale`
+    keep the full frame. Typing keeps the last target. Regions in event space."""
 
     def __init__(self, gs, keys, space, scale):
-        self.space, sw, sh = space, *space
-        acts = sorted([(g["t0"], g["t1"], g) for g in gs] + [(k["t0"], k["t1"], None) for k in keys], key=lambda a: a[0])
-        self.bursts = []  # [start, end, [(t, cx, cy, z), ...]]
-        for t0, t1, g in acts:
-            if not self.bursts or t0 - self.bursts[-1][1] > CAM_GAP_S:
-                self.bursts.append([t0, t1, []])
-            b = self.bursts[-1]
-            b[1] = max(b[1], t1)
-            if g is None:  # typing keeps the view where it is
-                continue
-            xs, ys = [x for _, x, _ in g["pts"]], [y for _, _, y in g["pts"]]
-            bw, bh = max(xs) - min(xs), max(ys) - min(ys)
-            z = min(scale, sw / max(bw * 1.4, 1), sh / max(bh * 1.4, 1))
-            cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
-            if b[2]:  # stay put while the press is well inside the current view
-                _, px, py, pz = b[2][-1]
-                if abs(cx - px) < sw / pz / 2 * CAM_KEEP and abs(cy - py) < sh / pz / 2 * CAM_KEEP and z >= pz:
-                    continue
-            b[2].append((t0, cx, cy, max(z, 1.0)))
-        self.bursts = [b for b in self.bursts if b[2]]
+        self.space, self.scale, self.gs, self.keys = space, scale, gs, keys
+        self.t0 = min([g["t0"] for g in gs] + [k["t0"] for k in keys], default=0) - 1
+        self.reset()
+
+    def reset(self):
+        cx, cy = self.space[0] / 2, self.space[1] / 2
+        self.t, self.x, self.v, self.tgt = self.t0, [1.0, cx, cy], [0.0, 0.0, 0.0], (1.0, cx, cy)
+
+    def target(self, t):
+        sw, sh = self.space
+        near = [g for g in self.gs if g["t1"] + CAM_HOLD_S >= t and g["t0"] <= t + CAM_LOOK_S]
+        if not near:
+            typing = any(k["t0"] <= t <= k["t1"] + CAM_HOLD_S for k in self.keys)
+            return self.tgt if typing else (1.0, self.x[1], self.x[2])  # zoom out where it is
+        xs = [x for g in near for _, x, _ in g["pts"]]
+        ys = [y for g in near for _, _, y in g["pts"]]
+        bw, bh = max(xs) - min(xs), max(ys) - min(ys)
+        z = min(self.scale, sw / max(bw * CAM_PAD, 1), sh / max(bh * CAM_PAD, 1))
+        if z < CAM_WIDE:
+            return 1.0, self.x[1], self.x[2]
+        return z, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
 
     def region(self, t):
         """[x, y, w, h] shown at t, or None at full frame."""
-        for start, end, keys in self.bursts:
-            t_in, t_out = keys[0][0] - 0.1 - ZOOM_S, end + CAM_HOLD_S
-            if t_in <= t <= t_out + ZOOM_S:
-                break
-        else:
+        if t < self.t:  # the spring only runs forward: start over
+            self.reset()
+        k, c, m = SPRING
+        while self.t < t:
+            self.t += SPRING_DT
+            self.tgt = self.target(self.t)
+            if self.x[0] <= 1.0005:  # aim while still wide, so the zoom goes straight in
+                self.x[1:], self.v[1:] = list(self.tgt[1:]), [0.0, 0.0]
+            for i in range(3):
+                self.v[i] += (-k * (self.x[i] - self.tgt[i]) - c * self.v[i]) / m * SPRING_DT
+                self.x[i] += self.v[i] * SPRING_DT
+        z, cx, cy = self.x
+        if z <= 1.0005:
             return None
-        p = ease(min((t - t_in) / ZOOM_S, (t_out + ZOOM_S - t) / ZOOM_S))
-        _, cx, cy, z = keys[0]
-        for (ta, xa, ya, za), (tb, xb, yb, zb) in zip(keys, keys[1:]):
-            u = ease((t - (tb - 0.05 - CAM_PAN_S)) / CAM_PAN_S)
-            if u > 0:
-                cx, cy, z = xa + (xb - xa) * u, ya + (yb - ya) * u, za + (zb - za) * u
         sw, sh = self.space
-        zf = 1 + (z - 1) * p
-        w, h = sw / zf, sh / zf
+        w, h = sw / z, sh / z
         return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
