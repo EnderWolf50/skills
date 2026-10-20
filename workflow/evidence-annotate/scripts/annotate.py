@@ -22,6 +22,7 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 """
 import argparse
 import json
+import math
 import re
 import subprocess
 import sys
@@ -49,12 +50,15 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill"}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "progress": "ring"}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": 0.0, "glow": False}}
 CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # bottom-centre capsule, a card beside the step's press, top-left capsule
+PROGRESS = ("ring", "segments", "pie", "number")  # the capsule's step marker: n/total as an amber ring, ...
+AMBER = (255, 196, 64)
+SEGMENTS_MAX = 12  # more steps than this make segments too thin: draw a ring
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
@@ -208,6 +212,8 @@ def load_style(doc):
         sys.exit(f"events: style.glow must be true or false, got {st['glow']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
+    if st["progress"] not in PROGRESS:
+        sys.exit(f"events: style.progress must be one of {', '.join(PROGRESS)}, got {st['progress']!r}")
     if st["caption"] not in CAPTIONS:
         sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
@@ -526,6 +532,7 @@ class Painter:
         self.f_tag = font(round(22 * s), 600)
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
+        self.f_prog = font(round(19 * s), 700)
         self.cache = {}
         self.view = None  # (x0, y0, kx, ky): the zoom's crop box in frame pixels and its magnification
 
@@ -709,24 +716,56 @@ class Painter:
             d.text((X0 + 7 * s, ly + 11 * s), label, font=self.f_label, fill=(20, 20, 24, int(255 * alpha)), anchor="lm")
 
     # --- caption panel (cached per text, faded by alpha)
+    def progress(self, n, total):
+        """The step marker, n of total done, in style.progress: an amber ring, ring segments, a pie, or a ring
+        around the number. Drawn 4x and scaled down for smooth edges."""
+        kind, s, k = self.style["progress"], self.s, 4
+        if kind == "segments" and total > SEGMENTS_MAX:
+            kind = "ring"
+        D = round((44 if kind == "number" else 36) * s)
+        im = Image.new("RGBA", (D * k, D * k))
+        d = ImageDraw.Draw(im)
+        c, dim, amber = D * k / 2, (255, 255, 255, 56), (*AMBER, 255)
+        if kind == "pie":
+            r, w = D * k * 0.36, max(k, round(D * k * 0.08))
+            d.ellipse([c - r, c - r, c + r, c + r], outline=amber, width=w)
+            r *= 0.74
+            d.pieslice([c - r, c - r, c + r, c + r], -90, -90 + 360 * n / total, fill=amber)
+        else:
+            r, w = D * k * (0.39 if kind == "number" else 0.34), round(D * k * (0.1 if kind == "number" else 0.145))
+            box = [c - r, c - r, c + r, c + r]
+            d.ellipse(box, outline=dim, width=w)
+            if kind == "segments":
+                gap, part = 20, 360 / total
+                for i in range(n):
+                    d.arc(box, -90 + i * part + gap / 2, -90 + (i + 1) * part - gap / 2, fill=amber, width=w)
+            else:
+                end = -90 + 360 * n / total
+                d.arc(box, -90, end, fill=amber, width=w)
+                for a in (-90, end):  # round caps
+                    x, y = c + (r - w / 2) * math.cos(math.radians(a)), c + (r - w / 2) * math.sin(math.radians(a))
+                    d.ellipse([x - w / 2, y - w / 2, x + w / 2, y + w / 2], fill=amber)
+        im = im.resize((D, D), Image.LANCZOS)
+        if kind == "number":
+            ImageDraw.Draw(im).text((D / 2, D / 2), str(n), font=self.f_prog, fill=(255, 255, 255, 255), anchor="mm")
+        return im
+
     def capsule(self, n, total, title):
-        """The pill / chapter caption: a translucent dark capsule, "n/total", a hairline, the title."""
+        """The pill / chapter caption: a translucent dark capsule, the step marker (progress), the title."""
         key = ("capsule", n, total, title)
         if key not in self.cache:
             s = self.s
-            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-            num = f"{n}/{total}"
-            nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
-            pad, gap = 32 * s, 16 * s
-            w, h = round(pad * 2 + nw + gap * 2 + tw), round(64 * s)
+            mark = self.progress(n, total)
+            tw = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textlength(title, font=self.f_cap)
+            pad, gap = 32 * s, 14 * s
+            h = round(64 * s)
+            left = (h - mark.width) / 2 + 6 * s  # the marker sits in the rounded end
+            w = round(left + mark.width + gap + tw + pad)
             im = Image.new("RGBA", (w, h))
             d = ImageDraw.Draw(im)
             d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(h / 2, 32 * s)), fill=(15, 17, 24, 170))
-            cy = 32 * s
-            d.text((pad, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
-            lx = pad + nw + gap
-            d.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
-            d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
+            im.alpha_composite(mark, (round(left), round((h - mark.height) / 2)))
+            d.text((left + mark.width + gap, h / 2), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
             self.cache[key] = im
         return self.cache[key]
 
