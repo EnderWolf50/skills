@@ -791,7 +791,7 @@ class Painter:
             w = sum(widths) + gap * (len(widths) - 1) + 2 * pad
         else:
             text = "".join(ch for ct, ch in item["chars"] if ct <= t)[-32:]  # the tail of a long text
-            w = d.textlength(text, font=self.f_key) + 2 * pad + 14 * s
+            w = d.textlength(text, font=self.f_key) + 4 * pad
         x, y = (self.w - w) / 2, bottom - h
         d.rounded_rectangle([x, y, x + w, y + h], radius=16 * s, fill=(18, 20, 28, int(220 * alpha)))
         if "caps" in item:
@@ -806,10 +806,7 @@ class Painter:
                     d.text((x + gap / 2, y + h / 2), "+", font=self.f_key, fill=(170, 176, 190, int(255 * alpha)), anchor="mm")
                     x += gap
         else:
-            d.text((x + pad, y + h / 2), text, font=self.f_key, fill=(255, 255, 255, int(255 * alpha)), anchor="lm")
-            if int(t * 2) % 2 == 0:  # caret blinks at 1 Hz
-                cx = x + pad + d.textlength(text, font=self.f_key) + 3 * s
-                d.rectangle([cx, y + 14 * s, cx + 2 * s, y + h - 14 * s], fill=(255, 255, 255, int(220 * alpha)))
+            d.text((x + w / 2, y + h / 2), text, font=self.f_key, fill=(255, 255, 255, int(255 * alpha)), anchor="mm")
 
     def corner(self, ov, text):
         s = self.s
