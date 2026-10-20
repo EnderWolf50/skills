@@ -50,12 +50,13 @@ ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
-STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": True, "motion": "signature_arc", "arc": None,
+STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
          "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
-CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
-                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring"},
-                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
+CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks", "trail": False},  # Cua's own swing; an
+                 # upright arrow reads calmer; Figma and Cua draw no drag trail
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "ring", "trail": True},
+                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink", "trail": False}}
 CLICKS = {"ring": 0.8, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
 # ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
 SPARK_S = 0.25
