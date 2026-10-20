@@ -63,8 +63,8 @@ PRESETS = {  # --preset: a whole look by use; events.json "style" keys override 
     "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
     "tutorial": {"zoom": True, "dot": True},  # steps for someone to follow
     "demo": {"cursor": "figma", "zoom": True, "float": True, "dot": True,
-             "frame": ["#6d5dfc", "#f27b9b"]},  # a showcase to share
-    "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#0f172a", "#1e3a5f"]},  # an AI agent at work
+             "frame": ["#e0c3fc", "#8ec5fc"]},  # a showcase to share
+    "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#141e30", "#243b55"]},  # an AI agent at work
 }
 CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
