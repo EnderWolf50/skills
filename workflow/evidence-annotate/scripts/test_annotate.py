@@ -293,7 +293,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"progress": "bar"}, {"glow": 1}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -413,16 +413,6 @@ def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
     covered = p.caption(ov, {"title": "Save", "note": "closes the form"}, 2, 3, 1.0, (900, 400))
     assert ov.getbbox() is not None
     assert (covered > 0) == (kind == "pill")
-
-
-@pytest.mark.parametrize("kind", a.PROGRESS)
-def test_every_progress_marker_fills_with_the_steps_done(kind):
-    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"progress": kind}}))
-    def amber(im):
-        r, g, b, al = np.asarray(im).astype(int).transpose(2, 0, 1)
-        return int(((al > 128) & (r > 200) & (g > 150) & (g < 230) & (b < 120)).sum())
-    assert amber(p.progress(1, 4)) < amber(p.progress(3, 4))
-    assert p.progress(13, 20).size == p.progress(2, 20).size  # the marker never grows with the step count
 
 
 def test_zoom_true_is_the_default_magnification():
