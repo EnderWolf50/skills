@@ -64,6 +64,8 @@ PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's scre
 SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
           "figma": [(0, 0), (0, 14), (4, 10.5), (10.5, 10.5)]}
 TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-1, -0.75)), "cua": cm.TIP_ANGLE}
+AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping ratio): about 25 % overshoot, as in
+# Figma's own cursor animation, which mirrors the arrow about its tip when the next target lies to its right
 # Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
 # MIT) on its 128-unit canvas, tip at (55, 30), and the glow strokes under it: (width, opacity)
 CUA_PATH = ("M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 "
@@ -168,12 +170,30 @@ class Track:
             gap = g["t0"] - prev["t1"]
             if gap < 0.02 or np.hypot(b[0] - a[0], b[1] - a[1]) < 1:
                 continue
-            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=style["tilt"], tip_angle=TIPS[style["cursor"]],
-                           effects={"glow": style["glow"]})
+            aim = style["tilt"] == "aim"
+            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=0.0 if aim else style["tilt"],
+                           tip_angle=TIPS[style["cursor"]], effects={"glow": style["glow"]})
             if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
                 traj = traj.scaled(gap / traj.arrival)
             self.glides.append((g["t0"] - traj.arrival, g, traj, b))
         self.moving = sorted([(st, st + tr.duration()) for st, _, tr, _ in self.glides] + [(g["t0"], g["t1"]) for g in gs])
+        mirror = 2 * (-np.pi / 2 - TIPS[style["cursor"]])  # the turn that mirrors the arrow about the vertical
+        self.swings, side = [], 0.0  # aim: (start s, from, to) each time the next target changes side
+        for st, g, tr, b in self.glides:
+            dx = b[0] - tr.samples[0][1]
+            to = mirror if dx > 4 else 0.0 if dx < -4 else side
+            if to != side:
+                self.swings.append((st, side, to))
+                side = to
+
+    def aim(self, t):
+        """"tilt": "aim": the arrow's turn (rad, clockwise) toward the side of its next target, on a spring."""
+        w, z = AIM
+        wd, rot = w * np.sqrt(1 - z * z), 0.0
+        for st, a, b in self.swings:
+            u = t - st
+            rot = a + (b - a) * (1 - np.exp(-z * w * u) * (np.cos(wd * u) + z / np.sqrt(1 - z * z) * np.sin(wd * u))) if u > 0 else rot
+        return rot
 
     def rest(self, t):
         """(seconds at rest so far, seconds until the next move): (0, 0) while moving or pressing."""
@@ -215,8 +235,10 @@ def load_style(doc):
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
         st["zoom"] = ZOOM_DEFAULT if st["zoom"] else 0
     for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("zoom", 0, 4), ("idle_fade", 0, 600)):
+        if k == "tilt" and st[k] == "aim":
+            continue
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
-            sys.exit(f"events: style.{k} must be a number from {lo} to {hi}, got {st[k]!r}")
+            sys.exit(f"events: style.{k} must be a number from {lo} to {hi}{' or \"aim\"' if k == 'tilt' else ''}, got {st[k]!r}")
     given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
     if st["color"] is None:
         sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
@@ -660,7 +682,7 @@ class Painter:
             gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
             self.radial(ov, *self.vp((gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s), g[2] * FX * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
-        rot = heading - cm.REST_HEADING
+        rot = track.aim(t) if self.style["tilt"] == "aim" else heading - cm.REST_HEADING
         since, until = track.rest(t)
         if self.style["float"] and since > 0:  # Cua's resting drift: a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi

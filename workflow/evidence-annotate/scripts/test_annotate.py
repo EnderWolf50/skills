@@ -289,6 +289,18 @@ def test_glide_bows_unless_arc_is_zero_and_leans_unless_tilt_is_zero():
     assert mid(tilt=0)[2] == a.cm.REST_HEADING
 
 
+def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:04.0", "tap", 900, 300), ev("10:00:07.0", "tap", 300, 300)])
+    tr = track(gs, tilt="aim")
+    mirror = 2 * (-np.pi / 2 - a.TIPS["mac"])
+    t = lambda s: a.hms(s)
+    assert tr.aim(t("10:00:02.0")) == 0  # target to the left of nothing yet: the usual arrow
+    peak = max(tr.aim(t("10:00:03.0") + k / 60) for k in range(120))
+    assert tr.aim(t("10:00:06.0")) == pytest.approx(mirror, abs=0.01) and peak > mirror * 1.1  # overshoots, settles
+    assert tr.aim(t("10:00:09.5")) == pytest.approx(0, abs=0.01)  # the next target lies left: back
+    assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
+
+
 def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
