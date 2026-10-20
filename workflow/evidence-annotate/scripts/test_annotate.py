@@ -454,3 +454,12 @@ def test_dot_adds_an_amber_dot_before_the_step_number():
 def test_zoom_true_is_the_default_magnification():
     assert a.load_style({"style": {"zoom": True}})["zoom"] == a.ZOOM_DEFAULT
     assert a.load_style({"style": {"zoom": False}})["zoom"] == 0
+
+
+def test_name_tag_trails_the_arrow():
+    w, h, s = 120, 35, 1.0
+    assert a.tag_at(w, h, 0, s) == (29, 38)  # at rest: below right of the tip, as before
+    x, y = a.tag_at(w, h, np.pi, s)  # turned half round: above left, clear of the tip
+    assert x + w < 0 and y + h < 0
+    x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(38, 29), s)  # body straight below the tip: tag below, centred
+    assert y > 0 and abs(x + w / 2) <= 1

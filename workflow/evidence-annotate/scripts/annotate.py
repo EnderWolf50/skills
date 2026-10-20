@@ -52,7 +52,7 @@ STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "
          "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
-                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": 0.0, "glow": False}}
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
 CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
@@ -712,7 +712,8 @@ class Painter:
         X, Y = self.vp(x * s, y * s)
         self.paste(ov, im, X - half, Y - half)
         if tag:
-            self.paste(ov, tag, X + 29 * s, Y + 38 * s)
+            tx, ty = tag_at(*tag.size, rot, s)
+            self.paste(ov, tag, X + tx, Y + ty)
 
     def gesture(self, ov, d, g, t, pointer):
         """Rings at the press (and a drag's or hold's release), the drag trail, and for touch a fingertip dot."""
@@ -866,6 +867,15 @@ class Framer:
                 xs = slice(x + w - r, x + w) if flip_x else slice(x, x + r)
                 out[ys, xs] = (frame[ys.start - y:ys.stop - y, xs.start - x:xs.stop - x] * m + self.bg[ys, xs] * (1 - m)).astype(np.uint8)
         return out
+
+
+def tag_at(w, h, rot, s):
+    """Top-left of a w x h name tag off the tip, behind the arrow as it turns by rot (Figma's tags trail the
+    arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
+    a = np.arctan2(38, 29) + rot
+    dx, dy = np.cos(a), np.sin(a)
+    cx, cy = 47.8 * s * dx + w / 2 * np.clip(2 * dx, -1, 1), 47.8 * s * dy + h / 2 * np.clip(2 * dy, -1, 1)
+    return round(cx - w / 2), round(cy - h / 2)
 
 
 def k_float(since):
