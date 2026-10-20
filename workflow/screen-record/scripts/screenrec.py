@@ -112,10 +112,12 @@ def nvenc_ok():
 def encoder_args(choice="auto"):
     """A near-transparent intermediate (evidence-annotate re-encodes it): HEVC on the GPU, else x264 (x265 is
     too slow to record live). cq 20 measured about 6 GB an hour on a 2489x1460 game battle (VMAF 99.4); a desktop
-    far less. x264 gets umh with a 64 px motion range: its default 16 px cannot follow a scrolling page and bloats it."""
+    far less. x264 gets umh with a 64 px motion range: its default 16 px cannot follow a scrolling page and bloats it.
+    x264 ultrafast keeps real time on 4 threads where veryfast fell to 19 fps on a 1440p game clip, and its final
+    encode measured higher (VMAF 97.6 against 96.6), at about 57 Mbps for the intermediate."""
     if choice == "nvenc" or (choice == "auto" and nvenc_ok()):
         return ["-c:v", "hevc_nvenc", "-preset", "p5", "-cq", "20"]
-    return ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-x264-params", "me=umh:merange=64"]
+    return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-x264-params", "me=umh:merange=64"]
 
 
 def prune(out_dir, keep_gb):

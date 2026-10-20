@@ -21,6 +21,7 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 --font    a CJK-capable font file (default: first of the usual Windows / Linux ones)
 """
 import argparse
+import os
 import json
 import re
 import subprocess
@@ -1006,12 +1007,15 @@ def zoom_frame(frame, region, space):
 
 def encoder_args():
     """AV1, else HEVC, on the GPU when a one-frame probe encode works (the -encoders list only says it was
-    compiled in), else libx264. On a 1440p game clip av1_nvenc cq 35 measured VMAF 98.5 at about 10 Mbps, where
+    compiled in), else AV1 on the CPU (libsvtav1), else libx264. On a 1440p game clip av1_nvenc cq 35 measured VMAF 98.5 at about 10 Mbps, where
     hevc_nvenc needed cq 29 for 97.5 at the same rate (AV1 plays in every browser; on Apple only from A17 Pro / M3).
+    libsvtav1 preset 8 crf 35 beat x264 medium crf 24 by about 6 dB PSNR on a UI clip at the same rate, and on
+    a game clip matched it at 20-35% less bitrate, at about x264 medium's speed.
     x264's default 16 px motion search cannot follow a scrolling page and bloats it about tenfold: umh with a
     64 px range can."""
     for args in (["-c:v", "av1_nvenc", "-preset", "p7", "-cq", "35"],
-                 ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"]):
+                 ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"],
+                 ["-c:v", "libsvtav1", "-preset", "8", "-crf", "35"]):
         if subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
                            *args[:2], "-f", "null", "-"], capture_output=True).returncode == 0:
             return args
@@ -1133,7 +1137,8 @@ def render(args):
     enc = None if args.no_video else subprocess.Popen(  # the crop keeps both sides even, as 4:2:0 needs
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}", "-r", f"{num}/{den}",
          "-i", "-", "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *encoder_args(), "-pix_fmt", "yuv420p",
-         "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
+         "-movflags", "+faststart", args.out], stdin=subprocess.PIPE,
+        env={**os.environ, "SVT_LOG": "1"})  # libsvtav1 prints its banner past -v error unless told
     n, size, gi = 0, W * H * 3, 0
     out = FrameWriter(enc.stdin) if enc else None
     fast = idle_spans(gs, keys, steps, args.idle_after) if args.idle_speed > 1 else []
