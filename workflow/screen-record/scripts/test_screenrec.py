@@ -10,6 +10,9 @@ uv run test_screenrec.py
 import argparse
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -36,9 +39,13 @@ def test_pick_window_refuses_none_and_minimised():
         screenrec.pick_window([{**WIN, "w": 0, "h": 0}], "app")  # minimised windows report an empty client area
 
 
-def test_out_size_scales_to_720_with_even_width_after_crop():
-    assert screenrec.out_size(WIN, 60) == (1920 * 720 // 1080, 720)  # 1920x1080 left -> 1280x720
-    assert screenrec.out_size({**WIN, "w": 1001, "h": 720}, 0)[0] % 2 == 0
+def test_out_size_keeps_the_window_size_unless_asked_and_stays_even():
+    assert screenrec.out_size(WIN, 60) == (1920, 1080)
+    assert screenrec.out_size({**WIN, "w": 1001, "h": 721}, 0) == (1000, 720)
+    assert screenrec.out_size(WIN, 60, 720) == (1280, 720)  # 1920x1080 left -> 1280x720
+    assert screenrec.out_size(WIN, 60, 4000) == (1920, 1080)  # never upscale
+    assert screenrec.size_filter(WIN, 60, 1920, 1080) == "crop=1920:1080:0:0"
+    assert screenrec.size_filter(WIN, 60, 1280, 720).startswith("scale=1280:720")
     with pytest.raises(SystemExit):
         screenrec.out_size(WIN, 1140)
 
@@ -47,6 +54,24 @@ def test_capture_chain_targets_the_hwnd_without_cursor_and_downloads_frames():
     c = screenrec.capture_chain(4242, 30)
     assert "hwnd=4242" in c and "capture_cursor=false" in c and "crop_top=30" in c
     assert c.endswith("hwdownload,format=bgra")
+    assert "capture_cursor=true" in screenrec.capture_chain(4242, 0, cursor=True)
+
+
+def test_capture_chain_shifts_pts_to_the_wall_clock_start():
+    assert "setpts" not in screenrec.capture_chain(4242, 0)  # the black-frame probe needs no shift
+    c = screenrec.capture_chain(4242, 0, 1_700_000_000_000_000)
+    assert "st(0\\,RTCTIME)" in c and "ld(0)-1700000000000000" in c
+    assert c.index("setpts") < c.index("hwdownload")  # stamped as captured, before the download
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_the_shift_puts_the_first_frame_at_its_wall_clock_offset():
+    t0 = int(time.time() * 1e6) - 500_000  # recording started half a second before the first frame
+    expr = screenrec.capture_chain(1, 0, t0).split(",setpts=")[1].split(",hwdownload")[0]
+    r = subprocess.run(["ffmpeg", "-v", "info", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=30", "-frames:v", "2",
+                        "-vf", f"setpts={expr},showinfo", "-f", "null", "-"], capture_output=True, text=True)
+    first = float(re.search(r"n:\s*0 .*?pts_time:([\d.]+)", r.stderr).group(1))
+    assert 0.4 < first < 3  # not RTCTIME itself: st() returns the value it stores
 
 
 def test_is_black_uses_mean_brightness():
@@ -110,7 +135,7 @@ def write_state(path, **kv):
 
 
 def start_args(out, profile="p"):
-    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264")
+    return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False, height=0)
 
 
 def stub_start(env, popen):

@@ -6,13 +6,14 @@
 
 uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json \
     [--steps steps.json] [--masks masks.json] [--from T --to T] [--frames T,T,...] [--offset S]
-    [--font FILE] [--no-video]
+    [--idle-speed N [--idle-after S]] [--preset NAME] [--font FILE] [--no-video]
 
 --start   wall time of the first video frame; every other time (events, steps, --from, --to, --frames) is wall time
---events  {"space":[w,h],"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}]}; coordinates in
+--events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}
+          or {"t","kind":"key","keys":"Ctrl+S"} or {"t","kind":"type","text":"...","ms"?}]}; coordinates in
           `space`, mapped to the frame by its own size. swipe runs x,y -> x2,y2 over ms; down/up bracket a press
           (up may carry x,y = the release point)
---steps   [{"from","to","title","note"?,"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
+--steps   [{"from","to","title","note"? (not drawn: for the report),"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
 --masks   {"space":[w,h],"masks":[{"template":"a.png","threshold":0.8,"boxes":[[x,y,w,h]]}]}: a box is blacked out
           while its template matches (2 fps scan, +-1 s around each hit); template paths relative to the masks file
 --from/--to  cut a clip; --frames also saves those annotated frames as PNG next to OUT; --no-video writes only them
@@ -21,25 +22,96 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 """
 import argparse
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+from queue import Queue
+from threading import Thread
 
 import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
+import cursor_motion as cm
+
 ACCENT = (255, 196, 64)  # amber: steps, boxes
-TOUCH = (90, 200, 255)  # sky blue: taps, trails
+POINTERS = ("touch", "mouse", "none")
 FONTS = [  # CJK first: Windows, then Linux
     "C:/Windows/Fonts/NotoSansTC-VF.ttf", "C:/Windows/Fonts/msjh.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
 ]
-EMOJI = [("C:/Windows/Fonts/seguiemj.ttf", 64), ("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf", 109)]
 HOLD_S = 0.3  # a press without movement longer than this is a hold
 FADE_S = 0.35  # step caption and box fade
+CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter caption
+FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
 ZOOM_S = 0.6  # zoom ease-in / ease-out
+RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
+PRESS_S = 0.08  # pointer shrinks to PRESS_K over this long before a press (ease-out), as Figma's snaps down
+RELEASE_S = 0.3  # and springs back over this long after the release (back-out, a 2.5 % overshoot)
+PRESS_K = 0.8
+STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
+         "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+# cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
+CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "shrink"},
+                 "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
+CLICKS = {"ring": PRESS_K, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
+# ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
+SPARK_S = 0.25
+PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
+    "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
+    "tutorial": {"zoom": True, "dot": True},  # steps for someone to follow
+    "demo": {"cursor": "figma", "zoom": True, "float": True, "dot": True,
+             "frame": ["#e0c3fc", "#8ec5fc"]},  # a showcase to share
+    "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#141e30", "#243b55"]},  # an AI agent at work
+}
+CURSORS = ("mac", "cua", "figma")
+CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
+ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
+COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
+TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip at rest; traced off Figma's (at the
+    # arrow's corner) and Cua's (beside the arrow, rounder and glowing, dark text)
+    "figma": {"at": (58, 60), "glow": False}, "cua": {"at": (46, 33), "glow": True}, "mac": {"at": (36, 52), "glow": False}}
+TAG_H = 64  # name tag height, the same for every cursor
+TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
+FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
+
+# pointer outlines in pointer units (3.2 px at 1280 wide), tip at 0,0, and where each tip points at rest
+SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
+          "figma": [(0, 0), (4.61, 13.22), (6.24, 6.56), (12.94, 4.73)]}  # figma: fitted to the cursor image
+# Figma's editor sets on its canvas: sides at 71 and 20 degrees, the notch 0.65 in, corners rounded (ROUND)
+ROUND = {"figma": 0.42}  # corner radius in pointer units
+TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-0.713, -0.701)), "cua": cm.TIP_ANGLE}
+AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping ratio): about 25 % overshoot, as in
+# Figma's own cursor animation, which turns the arrow about its tip toward a target on its right
+AIM_TURN = np.radians(64)  # aimed, Figma's dart has its sides at 85 and 135 degrees (from its 20 and 71 at rest)
+AIM_MIN_DX = 60  # px of a 1280-wide frame: a target closer to straight above or below keeps the current side
+LEAN = (300, 1500)  # px/s of a 1280-wide frame: no lean into the motion below the first, the full tilt from the second
+# Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
+# MIT) on its 128-unit canvas, tip at (55, 30), and the glow strokes under it: (width, opacity)
+CUA_PATH = ("M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 "
+            "C88 75 91 72 95 70 C95 70 108 63 108 63 C115 59 114 53 107 50 C107 50 55 30 55 30 Z")
+CUA_GLOW = [(44, 0.02), (36, 0.024), (29, 0.03), (23, 0.038), (18, 0.048), (14, 0.06), (10, 0.075), (7, 0.095)]
+
+
+def svg_points(path, n=12):
+    """Polygon of an SVG path made of M and C commands, each curve sampled n times."""
+    tok = re.findall(r"[MC]|-?[\d.]+", path)
+    pts, i = [], 0
+    while i < len(tok):
+        if tok[i] == "M":
+            pts.append((float(tok[i + 1]), float(tok[i + 2])))
+            i += 3
+        else:  # C x1 y1 x2 y2 x y
+            p0, (c1, c2, p3) = pts[-1], [(float(tok[i + k]), float(tok[i + k + 1])) for k in (1, 3, 5)]
+            for u in (j / n for j in range(1, n + 1)):
+                v = 1 - u
+                pts.append(tuple(v ** 3 * a + 3 * v * v * u * b + 3 * v * u * u * c + u ** 3 * d
+                                 for a, b, c, d in zip(p0, c1, c2, p3)))
+            i += 7
+    return pts
 
 
 # ---------------------------------------------------------------- time
@@ -65,7 +137,7 @@ def gestures(events):
 
     ponytail: one contact; a second `down` while one is open closes the first at that time."""
     out, held = [], None
-    for e in sorted(events, key=lambda e: hms(e["t"])):
+    for e in sorted((e for e in events if e["kind"] not in KEYS), key=lambda e: hms(e["t"])):
         t, k = hms(e["t"]), e["kind"]
         need = {"tap": "xy", "swipe": ("x", "y", "x2", "y2"), "down": "xy"}.get(k, ())
         if missing := [f for f in need if f not in e]:
@@ -96,6 +168,191 @@ def gestures(events):
     return sorted(out, key=lambda g: g["t0"])
 
 
+def pos_at(g, t):
+    """(x, y) of gesture g at time t in event space: its first point before, its last after, interpolated between."""
+    pts = g["pts"]
+    if t <= pts[0][0]:
+        return pts[0][1:]
+    if t >= pts[-1][0]:
+        return pts[-1][1:]
+    i = next(i for i in range(1, len(pts)) if pts[i][0] >= t)
+    (ta, xa, ya), (tb, xb, yb) = pts[i - 1], pts[i]
+    u = (t - ta) / (tb - ta) if tb > ta else 1
+    return xa + (xb - xa) * u, ya + (yb - ya) * u
+
+
+class Track:
+    """Where a mouse pointer is: at rest on the gestures, gliding between them as Cua Driver moves its cursor
+    (cursor_motion), arriving as each press starts. Glides are planned in 1280-wide frame pixels."""
+
+    def __init__(self, gs, style, to_px):
+        self.gs, self.to_px = gs, to_px  # to_px: event space -> 1280-wide pixels
+        self.glides = []  # (start s, gesture, trajectory, glide end point)
+        for prev, g in zip(gs, gs[1:]):
+            a, b = to_px(*pos_at(prev, prev["t1"])), to_px(*pos_at(g, g["t0"]))
+            gap = g["t0"] - prev["t1"]
+            if gap < 0.02 or np.hypot(b[0] - a[0], b[1] - a[1]) < 1:
+                continue
+            aim = style["tilt"] == "aim"
+            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=0.0 if aim else style["tilt"],
+                           tip_angle=TIPS[style["cursor"]], effects={"glow": style["glow"]})
+            if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
+                traj = traj.scaled(gap / traj.arrival)
+            self.glides.append((g["t0"] - traj.arrival, g, traj, b))
+        self.moving = sorted([(st, st + tr.duration()) for st, _, tr, _ in self.glides] + [(g["t0"], g["t1"]) for g in gs])
+        self.swings, side = [], 0.0  # aim: (start s, from, to) each time the next target changes side
+        for st, g, tr, b in self.glides:
+            dx = b[0] - tr.samples[0][1]
+            to = AIM_TURN if dx > AIM_MIN_DX else 0.0 if dx < -AIM_MIN_DX else side
+            if to != side:
+                self.swings.append((st, self.aim(st), to))  # from where the last swing has got to
+                side = to
+
+    def aim(self, t):
+        """"tilt": "aim": the arrow's turn (rad, clockwise) toward the side of its next target, on a spring."""
+        w, z = AIM
+        wd, rot = w * np.sqrt(1 - z * z), 0.0
+        for st, a, b in self.swings:
+            u = t - st
+            rot = a + (b - a) * (1 - np.exp(-z * w * u) * (np.cos(wd * u) + z / np.sqrt(1 - z * z) * np.sin(wd * u))) if u > 0 else rot
+        return rot
+
+    def rest(self, t):
+        """(seconds at rest so far, seconds until the next move): (0, 0) while moving or pressing."""
+        if any(a <= t <= b for a, b in self.moving):
+            return 0.0, 0.0
+        since = t - max((b for a, b in self.moving if b < t), default=-np.inf)
+        return since, min((a for a, b in self.moving if a > t), default=np.inf) - t
+
+    def at(self, t):
+        """(x, y, heading, trajectory or None, seconds into it) in 1280-wide pixels."""
+        gl = next((gl for gl in reversed(self.glides) if gl[0] <= t), None)
+        on = next((g for g in reversed(self.gs) if g["t0"] <= t), self.gs[0])
+        if gl and t < gl[1]["t0"]:  # gliding
+            _, x, y, h = gl[2].sample_at(t - gl[0])
+            return x, y, h, gl[2], t - gl[0]
+        x, y = self.to_px(*pos_at(on, t))
+        if gl and gl[1] is on and t - gl[0] <= gl[2].duration():  # arrived: the settle plays around the gesture
+            _, sx, sy, h = gl[2].sample_at(t - gl[0])
+            return x + sx - gl[3][0], y + sy - gl[3][1], h, gl[2], t - gl[0]
+        return x, y, cm.REST_HEADING, None, 0.0
+
+
+def lean(traj, t, heading):
+    """The pointer's turn into the motion (rad): the trajectory's heading, scaled by speed between LEAN's bounds, so
+    a slow or short move stays nearly upright and a fast one leans fully."""
+    rot = (heading - cm.REST_HEADING + np.pi) % (2 * np.pi) - np.pi
+    if traj is None:
+        return rot
+    return rot * ease((np.hypot(*traj.velocity_at(t)) - LEAN[0]) / (LEAN[1] - LEAN[0]))
+
+
+def load_style(doc, preset="evidence"):
+    """events.json "style" over PRESETS[preset] over STYLE, checked: cursor one of CURSORS, color #rrggbb (-> RGB tuple)."""
+    if preset not in PRESETS:
+        sys.exit(f"--preset must be one of {', '.join(PRESETS)}, got {preset!r}")
+    if not isinstance(doc.get("style", {}), dict):
+        sys.exit(f"events: style must be an object, got {doc['style']!r}")
+    st = {**STYLE, **PRESETS[preset], **doc.get("style", {})}
+    if unknown := set(st) - set(STYLE):
+        sys.exit(f"events: unknown style keys {sorted(unknown)}; known: {', '.join(STYLE)}")
+    if st["cursor"] not in CURSORS:
+        sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
+    st.update({k: v for k, v in CURSOR_MOTION[st["cursor"]].items() if st[k] is None})
+    if not isinstance(st["glow"], bool):
+        sys.exit(f"events: style.glow must be true or false, got {st['glow']!r}")
+    if st["click"] not in CLICKS:
+        sys.exit(f"events: style.click must be one of {', '.join(CLICKS)}, got {st['click']!r}")
+    if st["motion"] not in cm.STYLES:
+        sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
+    for k in ("dot", "float") + (() if st["trail"] is None else ("trail",)):
+        if not isinstance(st[k], bool):
+            sys.exit(f"events: style.{k} must be true or false, got {st[k]!r}")
+    if not isinstance(st["label"], str):
+        sys.exit(f"events: style.label must be text, got {st['label']!r}")
+    if st["caption"] not in CAPTIONS:
+        sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
+    if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
+        st["zoom"] = ZOOM_DEFAULT if st["zoom"] else 0
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("size", 0.3, 2), ("zoom", 0, 4), ("idle_fade", 0, 600)):
+        if k == "tilt" and st[k] == "aim":
+            continue
+        if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
+            sys.exit(f"events: style.{k} must be a number from {lo} to {hi}{' or \"aim\"' if k == 'tilt' else ''}, got {st[k]!r}")
+    given, st["color"] = st["color"], rgb(st["color"] or COLORS[st["cursor"]])
+    if st["color"] is None:
+        sys.exit(f"events: style.color must be #rrggbb, got {given!r}")
+    for k in ("label_color", "label_text"):  # None: the pointer colour; white text, Cua's dark
+        if st[k] is not None and (c := rgb(st[k])) is None:
+            sys.exit(f"events: style.{k} must be #rrggbb, got {st[k]!r}")
+        st[k] = st[k] and c
+    if st["frame"] is not None:
+        stops = st["frame"] if isinstance(st["frame"], list) else [st["frame"]]
+        if not 1 <= len(stops) <= 2 or None in (stops := [rgb(c) for c in stops]):
+            sys.exit(f"events: style.frame must be #rrggbb or [#rrggbb, #rrggbb], got {st['frame']!r}")
+        st["frame"] = stops
+    return st
+
+
+def rgb(c):
+    """'#rrggbb' -> (r, g, b), or None when it is not one."""
+    c = str(c).lstrip("#")
+    try:
+        return tuple(int(c[i:i + 2], 16) for i in (0, 2, 4)) if len(c) == 6 else None
+    except ValueError:
+        return None
+
+
+def press_k(gs, t, k=PRESS_K):
+    """Pointer scale at t: k while pressed, eased in over PRESS_S before the press, sprung back over RELEASE_S after."""
+    p = 0.0
+    for g in gs:  # presses never overlap, so at most one term is non-zero
+        if 0 <= (u := (t - g["t0"] + PRESS_S) / PRESS_S) and t <= g["t1"]:
+            p += 1 - (1 - min(u, 1)) ** 3
+        elif 0 <= (v := (t - g["t1"]) / RELEASE_S) <= 1:
+            p += -(1.7 + 1) * (v - 1) ** 3 - 1.7 * (v - 1) ** 2  # 1 - back-out(v): 1 at the release, dips below 0, ends at 0
+    return 1 - (1 - k) * min(p, 1)  # a quick second press can catch the first's rebound
+
+
+KEY_HOLD_S = 1.0  # a key pill stays this long after its last key
+TYPE_MS = 45  # a `type` event reveals one character this often unless it gives "ms"
+TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins the same pill
+KEYS = ("key", "type")
+
+
+def key_items(events, offset=0.0):
+    """Key pills from `key` ({"keys": "Ctrl+S"}) and `type` ({"text": "...", "ms"?: total}) events, sorted:
+    {"t0", "t1", "caps": [..]} or {"t0", "t1", "chars": [(t, ch), ...]}. Typing close behind typing joins it."""
+    out = []
+    for e in sorted((e for e in events if e["kind"] in KEYS), key=lambda e: hms(e["t"])):
+        t = hms(e["t"]) + offset
+        if e["kind"] == "key":
+            if not e.get("keys"):
+                raise ValueError(f"key event at {e['t']} lacks keys: {e}")
+            out.append({"t0": t, "t1": t + KEY_HOLD_S, "caps": [k.strip() for k in str(e["keys"]).split("+") if k.strip()]})
+            continue
+        text = str(e.get("text", ""))
+        if not text:
+            raise ValueError(f"type event at {e['t']} lacks text: {e}")
+        step = e.get("ms", TYPE_MS * len(text)) / 1000 / len(text)
+        chars = [(t + i * step, ch) for i, ch in enumerate(text)]
+        prev = next((it for it in reversed(out) if "chars" in it), None)
+        if prev and out[-1] is prev and t <= prev["chars"][-1][0] + TYPE_JOIN_S:
+            prev["chars"] += chars
+            prev["t1"] = chars[-1][0] + KEY_HOLD_S
+        else:
+            out.append({"t0": t, "t1": chars[-1][0] + KEY_HOLD_S, "chars": chars})
+    return out
+
+
+def key_at(items, t):
+    """(item, alpha) of the latest key pill showing at t, fading in over 0.15 s and out over 0.3 s, or None."""
+    for it in reversed(items):
+        if it["t0"] <= t < it["t1"]:
+            return it, max(0.0, min(1, (t - it["t0"]) / 0.15, (it["t1"] - t) / 0.3))
+    return None
+
+
 def shift(gs, offset):
     for g in gs:
         g["t0"] += offset
@@ -114,6 +371,17 @@ def load_steps(path):
         if z and (len(z) != 4 or z[2] <= 0 or z[3] <= 0):
             sys.exit(f"step {s.get('title')!r}: zoom must be [x,y,w,h] with w and h above 0, got {z}")
     return steps
+
+
+def step_anchor(step, gs):
+    """Where a callout points: the first press inside the step, else the centre of its first box, else None."""
+    g = next((g for g in gs if step["from"] <= g["t0"] < step["to"]), None)
+    if g:
+        return pos_at(g, g["t0"])
+    if step.get("boxes"):
+        x, y, w, h, *_ = step["boxes"][0]
+        return x + w / 2, y + h / 2
+    return None
 
 
 def step_at(steps, t):
@@ -142,13 +410,89 @@ def fit_region(r, space):
     return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
-def zoom_region(step, t, space):
-    """Region [x,y,w,h] of `space` shown at time t: eases from the full frame into step["zoom"] and back out."""
+CAM_HOLD_S = 1.0  # the camera stays in this long after a zoomed group's last action
+CAM_LEAD_S = 0.6  # starts moving this long before a group's first press: the spring settles in ~0.55 s
+CAM_GAP_S = 2.5  # a quieter gap than this ends a run of activity (Cap merges zooms closer than 2.5 s)
+CAM_PAD = 1.4  # the framed presses fill at most 1/CAM_PAD of the view
+CAM_WIDE = 1.15  # a fit looser than this stays at the full frame instead of a barely-there zoom
+SPRING = (200.0, 40.0, 2.25)  # stiffness, damping, mass: Cap's zoom spring
+SPRING_DT = 1 / 120
+
+
+class Camera:
+    """Auto zoom on a spring (Cap's constants). Presses group while they still fit one view at `scale`; a group
+    zooms when it holds two or more presses, a drag, or is the only one in its run of activity. A lone press amid
+    scattered ones keeps the full frame, so busy, spread-out work stays wide instead of pumping in and out; groups
+    side by side in time pan from one to the next. Typing keeps the view. Regions in event space."""
+
+    def __init__(self, gs, keys, space, scale):
+        self.space = sw, sh = space
+        fit = lambda grp: min(scale, *(n / max((max(v) - min(v)) * CAM_PAD, 1) for n, v in (
+            (sw, [x for g in grp for _, x, _ in g["pts"]]), (sh, [y for g in grp for _, _, y in g["pts"]]))))
+        groups, run, end = [], 0, None  # [presses, run]
+        for g in sorted(gs, key=lambda g: g["t0"]):
+            busy = max([end] + [k["t1"] for k in keys if k["t0"] < g["t0"]]) if end is not None else None
+            if busy is None or g["t0"] - busy > CAM_GAP_S:
+                run += 1
+                groups.append([[g], run])
+            elif groups[-1][1] == run and fit(groups[-1][0] + [g]) >= min(scale, fit(groups[-1][0])) - 1e-6:
+                groups[-1][0].append(g)
+            else:
+                groups.append([[g], run])
+            end = max(end or g["t1"], g["t1"])
+        alone = lambda r: sum(1 for _, q in groups if q == r) == 1
+        self.spans = []  # (from, to, z, cx, cy): the target while t is inside
+        for i, (grp, r) in enumerate(groups):
+            z = fit(grp)
+            drag = any(g["kind"] == "drag" for g in grp)
+            if z < CAM_WIDE or not (len(grp) > 1 or drag or alone(r)):
+                continue
+            t1 = max([g["t1"] for g in grp] + [k["t1"] for k in keys if grp[0]["t0"] <= k["t0"]
+                                                and (i + 1 == len(groups) or k["t0"] < groups[i + 1][0][0]["t0"])])
+            nxt = groups[i + 1][0][0]["t0"] - CAM_LEAD_S if i + 1 < len(groups) else t1 + CAM_HOLD_S
+            xs = [x for g in grp for _, x, _ in g["pts"]]
+            ys = [y for g in grp for _, _, y in g["pts"]]
+            self.spans.append((grp[0]["t0"] - CAM_LEAD_S, min(t1 + CAM_HOLD_S, nxt), z, (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2))
+        self.t0 = min([g["t0"] for g in gs] + [k["t0"] for k in keys], default=0) - 1
+        self.reset()
+
+    def reset(self):
+        cx, cy = self.space[0] / 2, self.space[1] / 2
+        self.t, self.x, self.v = self.t0, [1.0, cx, cy], [0.0, 0.0, 0.0]
+
+    def target(self, t):
+        span = next((sp for sp in self.spans if sp[0] <= t < sp[1]), None)
+        return span[2:] if span else (1.0, self.x[1], self.x[2])  # zoom out where it is
+
+    def region(self, t):
+        """[x, y, w, h] shown at t, or None at full frame."""
+        if t < self.t:  # the spring only runs forward: start over
+            self.reset()
+        k, c, m = SPRING
+        while self.t < t:
+            self.t += SPRING_DT
+            tgt = self.target(self.t)
+            if self.x[0] <= 1.0005:  # aim while still wide, so the zoom goes straight in
+                self.x[1:], self.v[1:] = list(tgt[1:]), [0.0, 0.0]
+            for i in range(3):
+                self.v[i] += (-k * (self.x[i] - tgt[i]) - c * self.v[i]) / m * SPRING_DT
+                self.x[i] += self.v[i] * SPRING_DT
+        z, cx, cy = self.x
+        if z <= 1.0005:
+            return None
+        sw, sh = self.space
+        w, h = sw / z, sh / z
+        return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
+
+
+def zoom_region(step, t, space, base=None):
+    """Region [x,y,w,h] of `space` shown at time t: eases from base (the camera's view, else the full frame) into
+    step["zoom"] and back out."""
     z = step.get("zoom")
     if not z:
         return None
     p = ease(min((t - step["from"]) / ZOOM_S, (step["to"] - t) / ZOOM_S))
-    full, tgt = (0, 0, *space), fit_region(z, space)
+    full, tgt = base or (0, 0, *space), fit_region(z, space)
     return tuple(a + (b - a) * p for a, b in zip(full, tgt))
 
 
@@ -237,8 +581,10 @@ def pick_font(arg):
 
 
 class Painter:
-    def __init__(self, w, h, space, font_path):
+    def __init__(self, w, h, space, font_path, style=None):
         self.w, self.h, self.space = w, h, space
+        self.style = style or load_style({})
+        self.color = self.style["color"]
         self.sx, self.sy, self.s = w / space[0], h / space[1], w / 1280  # s scales sizes, sx/sy scale positions
         s = self.s
 
@@ -250,84 +596,217 @@ class Painter:
                 pass
             return f
 
-        self.f_title, self.f_note = font(round(26 * s), 700), font(round(17 * s), 400)
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
-        self.hand = self.hand_shadow = self.tip = None
-        for path, px in EMOJI:
-            if Path(path).exists():
-                self._load_hand(path, px)
-                break
+        self.fx = FX * self.style["size"]
+        self.tag_spec = TAG[self.style["cursor"]]
+        self.tag_h = TAG_H * s * self.style["size"]
+        self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
+        self.f_key = font(round(22 * s), 600)
+        self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
-
-    def _load_hand(self, path, px):
-        im = Image.new("RGBA", (px + 32, px + 32))
-        ImageDraw.Draw(im).text((8, 4), "\U0001F446", font=ImageFont.truetype(path, px), embedded_color=True)
-        hand = im.crop(im.getbbox())
-        size = round(46 * self.s)
-        hand = hand.resize((size, round(size * hand.height / hand.width)), Image.LANCZOS)
-        a = np.array(hand)[:, :, 3]
-        tip_y = int(np.argmax(a.max(1) > 128))
-        self.tip = (int(np.mean(np.nonzero(a[tip_y] > 128))), tip_y)  # fingertip pixel = touch point
-        shadow = Image.new("RGBA", (hand.width + 16, hand.height + 16))
-        shadow.paste((0, 0, 0, 255), (8, 8), hand)
-        self.hand_shadow, self.hand = shadow.filter(ImageFilter.GaussianBlur(4)), hand
+        self.view = None  # (x0, y0, kx, ky): the zoom's crop box in frame pixels and its magnification
 
     def xy(self, x, y):
-        return x * self.sx, y * self.sy
+        """Event space -> output pixels, through the zoom when one is on."""
+        return self.vp(x * self.sx, y * self.sy)
+
+    def vp(self, X, Y):
+        """Frame pixels -> output pixels: overlays are drawn after the zoom, so they stay sharp and their size."""
+        if not self.view:
+            return X, Y
+        x0, y0, kx, ky = self.view
+        return (X - x0) * kx, (Y - y0) * ky
 
     # --- touches
-    def _hand(self, ov, x, y, alpha, press):
-        if self.hand is None:
+    def circle(self, ov, X, Y, r, fill, fill_a, edge, edge_a, edge_w):
+        """Antialiased disc of radius r with a centred edge band edge_w wide, composited onto ov."""
+        R = r + edge_w
+        x0, y0, x1, y1 = max(0, int(X - R) - 1), max(0, int(Y - R) - 1), min(self.w, int(X + R) + 2), min(self.h, int(Y + R) + 2)
+        if x0 >= x1 or y0 >= y1 or r <= 0:
             return
-        k = 0.88 if press else 1.0
-        hand, sh = self.hand, self.hand_shadow
-        if k != 1:
-            hand = hand.resize((round(hand.width * k), round(hand.height * k)), Image.LANCZOS)
-        px, py = round(x - self.tip[0] * k), round(y - self.tip[1] * k + (2 if press else 0))
-        if alpha < 1:
-            hand = hand.copy()
-            hand.putalpha(hand.getchannel("A").point(lambda v: int(v * alpha)))
-        sm = sh.copy()
-        sm.putalpha(sh.getchannel("A").point(lambda v: int(v * 0.45 * alpha)))
-        ov.alpha_composite(sm, (max(0, px - 4), max(0, py + 2)))
-        ov.alpha_composite(hand, (max(0, px), max(0, py)))
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        d = np.hypot(xx + 0.5 - X, yy + 0.5 - Y)
+        ae = edge_a * np.clip(edge_w / 2 - np.abs(d - r) + 0.5, 0, 1)
+        af = fill_a * np.clip(r - d + 0.5, 0, 1) * (1 - ae)
+        a = ae + af
+        rgb = (np.multiply.outer(ae, edge) + np.multiply.outer(af, fill)) / np.maximum(a, 1e-6)[..., None]
+        ov.alpha_composite(Image.fromarray(np.dstack([rgb, a * 255]).round().astype(np.uint8), "RGBA"), (x0, y0))
 
-    def gesture(self, ov, d, g, t):
+    def sparks(self, d, X, Y, u):
+        """Cua's press: three short strokes flying off the tip, away from the body, fading over SPARK_S (u 0..1)."""
+        L = 62 * self.fx / FX * self.s  # the arrow's length
+        a0 = TIPS[self.style["cursor"]]
+        for da in (-0.7, 0, 0.7):
+            v = np.array([np.cos(a0 + da), np.sin(a0 + da)])
+            r0, r1 = (0.12 + 0.2 * u) * L, (0.32 + 0.12 * u) * L
+            d.line([(X + v[0] * r0, Y + v[1] * r0), (X + v[0] * r1, Y + v[1] * r1)], fill=(*self.color, round(255 * (1 - u) ** 0.7)),
+                   width=max(1, round(0.045 * L)))
+
+    def ring(self, ov, X, Y, age):
+        """Click ring: grows to 100 px (at 1280 wide) with ease-out cubic and fades over RING_S after the press."""
+        p = age / RING_S
+        if 0 <= p <= 1:
+            R, a = 100 * self.s, 0.7 * (1 - p) ** 1.5
+            self.circle(ov, X, Y, R * (1 - (1 - p) ** 3), self.color, 0.3 * a, self.color, a, (0.1 + 0.06 * p) * R * 0.6)
+
+    def sprite(self, k):
+        """Pointer sprite at press scale k, drawn 4x and scaled down, square with the tip at its centre (so it
+        rotates about the tip): (image, half size). Look by style.cursor; cua and figma take style.color."""
+        k = round(k * 50) / 50  # a dozen sizes between PRESS_K and the overshoot: each is a 4x draw and blur, so cache few
+        if ("sprite", k) in self.cache:
+            return self.cache[("sprite", k)]
+        kind, rgb = self.style["cursor"], self.color
+        if kind == "cua":  # 128-unit canvas shown 42 pt x FX x style.size, tip at (55, 30)
+            u = 42 * self.fx / 128 * self.s * k * 4
+            pts, tip = svg_points(CUA_PATH), (55, 30)
+        else:
+            u = {"mac": 3.2, "figma": 4.5}[kind] * self.fx / FX * self.s * k * 4  # both about as tall as cua's
+            pts, tip = SHAPES[kind], (0, 0)
+        half = round(130 * u) if kind == "cua" else round(30 * u)  # room for the shape, its glow and any rotation
+        size = (2 * half, 2 * half)
+        mask = Image.new("L", size)
+        poly = [(half + (x - tip[0]) * u, half + (y - tip[1]) * u) for x, y in pts]
+        ImageDraw.Draw(mask).polygon(poly, fill=255)
+        if r := round(ROUND.get(kind, 0) * u):  # round every corner, the notch too: close, then open
+            disc = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r + 1, 2 * r + 1))
+            mask = Image.fromarray(cv2.morphologyEx(cv2.morphologyEx(np.asarray(mask), cv2.MORPH_CLOSE, disc), cv2.MORPH_OPEN, disc))
+        m = np.asarray(mask)
+        outside = cv2.distanceTransform(255 - m, cv2.DIST_L2, 5)  # pixels to the shape, 0 inside
+        inside = cv2.distanceTransform(m, cv2.DIST_L2, 5)  # pixels to the edge, 0 outside
+
+        def grow(w):  # mask grown (w > 0) or shrunk by w units: round corners, one-pixel soft edge
+            d = w * u - outside if w > 0 else inside + w * u
+            return Image.fromarray((np.clip(d + 0.5, 0, 1) * 255).astype(np.uint8))
+
+        im = Image.new("RGBA", size)
+        if kind == "cua":  # Cua's soft glow strokes, then the body with a white stroke centred on its edge
+            for w, a in CUA_GLOW:
+                layer = Image.new("RGBA", size, rgb)
+                layer.putalpha(grow(w / 2).point(lambda v: int(v * a)))
+                im.alpha_composite(layer)
+            im.paste((255, 255, 255, 255), (0, 0), grow(2.5))
+            im.paste((*rgb, 255), (0, 0), grow(-2.5))
+        else:  # drop shadow, white rim outside the outline, then the fill
+            edge = {"mac": 1.3, "figma": 1.1}[kind]
+            border = grow(edge)
+            shadow = Image.new("RGBA", size, (0, 0, 0))
+            a, blur = {"mac": (0.3, 4), "figma": (0.35, 3)}[kind]
+            shadow.putalpha(border.filter(ImageFilter.GaussianBlur(blur * u / 3.2)).point(lambda v: int(v * a)))
+            im.alpha_composite(shadow, (0, round(u)))
+            im.paste((255, 255, 255, 255), (0, 0), border)
+            im.paste((17, 17, 17, 255) if kind == "mac" else (*rgb, 255), (0, 0), mask)
+        out = (im.resize((size[0] // 4, size[1] // 4), Image.LANCZOS), half // 4)
+        self.cache[("sprite", k)] = out
+        return out
+
+    def tag(self):
+        """Name tag (style.label) in the style colour, or None without a label."""
+        if not self.style["label"]:
+            return None
+        if "tag" not in self.cache:  # (image, margin round the body left for Cua's glow)
+            h = round(self.tag_h)
+            tw = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textlength(self.style["label"], font=self.f_tag)
+            w, m = round(tw + 0.64 * h), round(0.3 * h)
+            r = round((0.3 if self.tag_spec["glow"] else 0.1) * h)  # Cua's rounder, Figma's squarer
+            im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
+            body = [m, m, m + w - 1, m + h - 1]
+            fill = self.style["label_color"] or self.color
+            text = (*(self.style["label_text"] or (255, 255, 255)), 255)
+            if self.tag_spec["glow"]:  # Cua's: a soft glow in the colour, dark text
+                glow = Image.new("RGBA", im.size)
+                ImageDraw.Draw(glow).rounded_rectangle(body, radius=r, fill=(*fill, 140))
+                im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(0.12 * h)))
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*fill, 255))
+                text = (*(self.style["label_text"] or [round(c * 0.18) for c in fill]), 255)
+            else:
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*fill, 255))
+            ImageDraw.Draw(im).text((m + w / 2, m + h / 2), self.style["label"], font=self.f_tag, fill=text, anchor="mm")
+            self.cache["tag"] = (im, m)
+        return self.cache["tag"]
+
+    def paste(self, ov, im, x, y):
+        """alpha_composite im at (x, y), clipped to the frame."""
+        x, y = round(x), round(y)
+        box = (max(0, -x), max(0, -y), min(im.width, self.w - x), min(im.height, self.h - y))
+        if box[0] < box[2] and box[1] < box[3]:
+            ov.alpha_composite(im.crop(box), (x + box[0], y + box[1]))
+
+    def track(self, gs):
+        return Track(gs, self.style, lambda x, y: (x * self.sx / self.s, y * self.sy / self.s))
+
+    def radial(self, ov, X, Y, r, rgb, alpha):
+        """Soft disc: alpha at the centre falling linearly to 0 at radius r."""
+        x0, y0, x1, y1 = max(0, int(X - r)), max(0, int(Y - r)), min(self.w, int(X + r) + 1), min(self.h, int(Y + r) + 1)
+        if x0 >= x1 or y0 >= y1:
+            return
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        a = alpha * np.clip(1 - np.hypot(xx + 0.5 - X, yy + 0.5 - Y) / r, 0, 1)
+        ov.alpha_composite(Image.fromarray(np.dstack([np.broadcast_to(rgb, a.shape + (3,)), a * 255]).astype(np.uint8), "RGBA"), (x0, y0))
+
+    def cursor(self, ov, track, gs, t):
+        """The mouse pointer on its track, its speed glow and comet trail (by style.motion), shrinking while
+        pressing; the name tag stays upright beside the tip."""
+        s, lit = self.s, cm.lift(self.color)
+        x, y, heading, traj, lt = track.at(t)
+        if traj and "trail" in traj.effects:
+            layer = Image.new("RGBA", (self.w, self.h))
+            d = ImageDraw.Draw(layer)
+            for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * self.fx):
+                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*lit, int(255 * al)), width=max(1, round(w * self.fx * s)), joint="curve")
+            ov.alpha_composite(layer)
+        gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx)  # glow sits off the body, scaled as the pointer
+        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, (gx, gy))):
+            self.radial(ov, *self.vp((gx + (g[0] - gx) * self.fx) * s, (gy + (g[1] - gy) * self.fx) * s), g[2] * self.fx * s, lit, g[3])
+        im, half = self.sprite(press_k(gs, t, CLICKS[self.style["click"]]))
+        rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
+        since, until = track.rest(t)
+        x0, y0 = x, y  # the lag below is the glide's, not the float's
+        if self.style["float"] and 0 < since < np.inf:  # Cua's resting drift (not before the first move: since is inf): a slow 4 s loop, a few points and degrees
+            a = (since % 4) / 4 * 2 * np.pi
+            x, y = x + np.sin(a) * 5 * self.fx * k_float(since), y + (6 * np.cos(a) - 6) * self.fx * k_float(since)
+            rot += np.radians(2.5) * np.sin(a) * k_float(since)
+        alpha = 1.0
+        if self.style["idle_fade"] and since > 0:
+            alpha = 1 - ease((since - self.style["idle_fade"]) / 0.4) * (1 - ease(1 - until / 0.25))
+        if alpha <= 0.01:
+            return
+        if abs(rot) > 0.005:
+            im = im.rotate(-np.degrees(rot), resample=Image.BICUBIC, center=(half, half))
+        tag = self.tag()
+        if alpha < 1:
+            im, tag = fade(im, alpha), tag and (fade(tag[0], alpha), tag[1])
+        X, Y = self.vp(x * s, y * s)
+        self.paste(ov, im, X - half, Y - half)
+        if tag:
+            tag, m = tag
+            tx, ty = tag_at(tag.width - 2 * m, tag.height - 2 * m, rot, s * self.fx / FX, self.tag_spec["at"])
+            tx, ty = tx - m, ty - m
+            lx, ly = np.subtract(self.vp(x0 * s, y0 * s), self.vp(*np.multiply(track.at(t - TAG_LAG[0])[:2], s)))
+            if (m := np.hypot(lx, ly)) > TAG_LAG[1] * s:
+                lx, ly = lx / m * TAG_LAG[1] * s, ly / m * TAG_LAG[1] * s
+            self.paste(ov, tag, X + tx - lx, Y + ty - ly)
+
+    def gesture(self, ov, d, g, t, pointer):
+        """Rings at the press (and a drag's or hold's release), the drag trail, and for touch a fingertip dot."""
         s = self.s
         t0, t1 = g["t0"], g["t1"]
-        if not (t0 - 0.3 <= t <= t1 + 0.7):
-            return
-        pts = g["pts"]
-        if t <= pts[0][0]:
-            x, y = pts[0][1:]
-        elif t >= pts[-1][0]:
-            x, y = pts[-1][1:]
-        else:
-            i = next(i for i in range(1, len(pts)) if pts[i][0] >= t)
-            (ta, xa, ya), (tb, xb, yb) = pts[i - 1], pts[i]
-            u = (t - ta) / (tb - ta) if tb > ta else 1
-            x, y = xa + (xb - xa) * u, ya + (yb - ya) * u
-        X, Y = self.xy(x, y)
-        held = t0 <= t <= t1
-        fade = min(1, (t - (t0 - 0.3)) / 0.25, (t1 + 0.7 - t) / 0.35)
-        if g["kind"] == "drag":  # fading trail of the last 0.9 s
-            trail = [(pt, *self.xy(px, py)) for pt, px, py in pts if t - 0.9 <= pt <= t] + [(t, X, Y)]
-            for (ta, xa, ya), (tb, xb, yb) in zip(trail, trail[1:]):
-                a = max(0, 1 - (t - tb) / 0.9) * fade
-                d.line([(xa, ya), (xb, yb)], fill=(10, 20, 40, int(120 * a)), width=max(5, round(15 * s * a)))
-                d.line([(xa, ya), (xb, yb)], fill=(*TOUCH, int(240 * a)), width=max(3, round(9 * s * a)))
-            sx, sy = self.xy(*pts[0][1:])
-            r = 7 * s
-            d.ellipse([sx - r, sy - r, sx + r, sy + r], outline=(*TOUCH, int(200 * fade)), width=max(1, round(2 * s)))
-        if held:
-            r = 14 * s * (1 + (0.12 * np.sin((t - t0) * 9) if g["kind"] == "hold" else 0))
-            d.ellipse([X - r, Y - r, X + r, Y + r], fill=(*TOUCH, 110), outline=(255, 255, 255, 230), width=max(2, round(2.5 * s)))
-        for tr, big in ((t0, True), (t1, False)) if g["kind"] != "tap" else ((t0, True),):  # press / release ripples
-            p = (t - tr) / 0.55
-            if 0 <= p <= 1:
-                r = (12 + (48 if big else 28) * p) * s
-                d.ellipse([X - r, Y - r, X + r, Y + r], outline=(*TOUCH, int(230 * (1 - p))), width=max(2, round(4 * s * (1 - p) + 1)))
-        self._hand(ov, X, Y, fade, held or abs(t - t0) < 0.12)
+        X, Y = self.xy(*pos_at(g, t))
+        trail = pointer != "mouse" if self.style["trail"] is None else self.style["trail"]  # no mouse cursor draws one
+        if g["kind"] == "drag" and trail and t0 <= t <= t1 + 0.5:  # trail from the start to the finger, fading after release
+            a = 1 - max(0, t - t1) / 0.5
+            line = [self.xy(px, py) for pt, px, py in g["pts"] if pt <= t] + [(X, Y)]
+            d.line(line, fill=(*self.color, int(140 * a)), width=max(2, round(12 * s)), joint="curve")
+        click = self.style["click"] if pointer == "mouse" else "ring"
+        if click == "ring":
+            self.ring(ov, *self.xy(*pos_at(g, t0)), t - t0)
+            if g["kind"] != "tap":
+                self.ring(ov, X, Y, t - t1)
+        elif click == "sparks" and 0 <= t - t0 <= SPARK_S:
+            self.sparks(d, *self.xy(*pos_at(g, t0)), (t - t0) / SPARK_S)
+        if pointer == "touch":
+            vis = max(0.0, min(1, (t1 + 0.3 - t) / 0.3))  # appears on the press itself: a finger has no hover
+            if t >= t0 and vis > 0:
+                self.circle(ov, X, Y, 28 * s * press_k([g], t), (255, 255, 255), 0.95 * vis, (0, 0, 0), 0.25 * vis, 4 * s)
 
     # --- boxes
     def box(self, d, x, y, w, h, label, alpha):
@@ -342,34 +821,87 @@ class Painter:
             d.text((X0 + 7 * s, ly + 11 * s), label, font=self.f_label, fill=(20, 20, 24, int(255 * alpha)), anchor="lm")
 
     # --- caption panel (cached per text, faded by alpha)
-    def panel(self, n, title, note):
-        key = (n, title, note)
-        if key in self.cache:
-            return self.cache[key]
+    def capsule(self, n, total, title):
+        """The pill / chapter caption: a translucent dark capsule, an amber dot (style.dot), "n/total", a hairline,
+        the title."""
+        key = ("capsule", n, total, title)
+        if key not in self.cache:
+            s = self.s
+            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+            num = f"{n}/{total}"
+            nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
+            pad, gap = 32 * s, 16 * s
+            dot = 16 * s if self.style["dot"] else 0  # its diameter
+            w, h = round(pad * 2 + (dot and dot + gap * 0.75) + nw + gap * 2 + tw), round(64 * s)
+            im = Image.new("RGBA", (w, h))
+            d = ImageDraw.Draw(im)
+            d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(h / 2, 32 * s)), fill=(15, 17, 24, 170))
+            cy = 32 * s
+            if dot:
+                d.ellipse([pad, cy - dot / 2, pad + dot, cy + dot / 2], fill=(255, 196, 64, 255))
+            x = pad + (dot and dot + gap * 0.75)
+            lx = x + nw + gap
+            dim = Image.new("RGBA", im.size)  # drawn apart and composited: a translucent fill drawn straight onto
+            dd = ImageDraw.Draw(dim)          # the capsule would replace its dark pixels instead of blending
+            dd.text((x, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
+            dd.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
+            im.alpha_composite(dim)
+            d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
+            self.cache[key] = im
+        return self.cache[key]
+
+    def caption(self, ov, step, n, total, alpha, anchor):
+        """Draw the step caption, the same capsule wherever style.caption puts it; returns how much of the bottom
+        edge it covers (for the key pill)."""
+        s, kind = self.s, self.style["caption"]
+        cap = self.capsule(n, total, step["title"])
+        alpha, rise = cap_in(alpha)
+        rise *= s
+        if alpha < 1:
+            cap = fade(cap, alpha)
+        if kind == "callout" and anchor:
+            X, Y = self.xy(*anchor)
+            w, h = cap.size
+            gap, edge = 72 * s, 16 * s  # clear of the click ring, which fades out before it grows to 100 px
+            # the pointer and its name tag hang below and right of the tip: try left, above, right, below
+            sides = [(X - gap - w, Y - h / 2), (X - w / 2, Y - gap - h), (X + gap + 150 * s, Y - h / 2), (X - w / 2, Y + gap + 60 * s)]
+            fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
+            over = lambda xy: max(0, edge - xy[0], xy[0] - (self.w - edge - w)) + max(0, edge - xy[1], xy[1] - (self.h - edge - h))
+            x, y = next((xy for xy in sides if fits(xy)), min(sides, key=over))
+            self.paste(ov, cap, min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h) + rise)
+            return 0
+        if kind == "chapter":
+            self.paste(ov, cap, CAP_EDGE * s, CAP_EDGE * s + rise)
+            return 0
+        self.paste(ov, cap, (self.w - cap.width) / 2, self.h - CAP_EDGE * s - cap.height + rise)
+        return cap.height + CAP_EDGE * s
+
+    def keys(self, ov, item, t, alpha, bottom):
+        """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
         s = self.s
-        pad, badge = round(16 * s), round(36 * s)
-        probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        note = note or ""
-        while note and probe.textlength(note, font=self.f_note) > 1000 * s:
-            note = note[:-2].rstrip() + "…" if not note.endswith("…") else note[:-2] + "…"
-        tw = max(probe.textlength(title, font=self.f_title), probe.textlength(note, font=self.f_note))
-        w = round(pad * 3 + badge + tw)
-        h = round(pad * 2 + 34 * s + (24 * s if note else 0))
-        im = Image.new("RGBA", (w + 24, h + 24))
-        sh = Image.new("RGBA", im.size)
-        ImageDraw.Draw(sh).rounded_rectangle([12, 16, w + 12, h + 14], radius=round(14 * s), fill=(0, 0, 0, 120))
-        im.alpha_composite(sh.filter(ImageFilter.GaussianBlur(8)))
-        d = ImageDraw.Draw(im)
-        d.rounded_rectangle([12, 12, w + 12, h + 12], radius=round(14 * s), fill=(18, 20, 28, 196), outline=(255, 255, 255, 40), width=1)
-        bx, by = 12 + pad, 12 + pad
-        d.ellipse([bx, by, bx + badge, by + badge], fill=ACCENT)
-        d.text((bx + badge / 2, by + badge / 2), str(n), font=self.f_badge, fill=(24, 22, 18), anchor="mm")
-        tx = bx + badge + pad
-        d.text((tx, by + badge / 2), title, font=self.f_title, fill=(255, 255, 255), anchor="lm")
-        if note:
-            d.text((tx, by + badge + 4 * s), note, font=self.f_note, fill=(205, 214, 228), anchor="lt")
-        self.cache[key] = im
-        return im
+        d = ImageDraw.Draw(ov)
+        pad, h, cap_h, gap = 12 * s, 54 * s, 38 * s, 22 * s
+        if "caps" in item:
+            widths = [d.textlength(c, font=self.f_key) + 28 * s for c in item["caps"]]
+            w = sum(widths) + gap * (len(widths) - 1) + 2 * pad
+        else:
+            text = "".join(ch for ct, ch in item["chars"] if ct <= t)[-32:]  # the tail of a long text
+            w = d.textlength(text, font=self.f_key) + 4 * pad
+        x, y = (self.w - w) / 2, bottom - h
+        d.rounded_rectangle([x, y, x + w, y + h], radius=16 * s, fill=(18, 20, 28, int(220 * alpha)))
+        if "caps" in item:
+            x += pad
+            for i, (c, cw) in enumerate(zip(item["caps"], widths)):
+                cy = y + (h - cap_h) / 2
+                d.rounded_rectangle([x, cy + 3 * s, x + cw, cy + cap_h + 3 * s], radius=8 * s, fill=(170, 176, 190, int(255 * alpha)))
+                d.rounded_rectangle([x, cy, x + cw, cy + cap_h], radius=8 * s, fill=(255, 255, 255, int(255 * alpha)))
+                d.text((x + cw / 2, cy + cap_h / 2), c, font=self.f_key, fill=(20, 22, 28, int(255 * alpha)), anchor="mm")
+                x += cw
+                if i < len(widths) - 1:
+                    d.text((x + gap / 2, y + h / 2), "+", font=self.f_key, fill=(170, 176, 190, int(255 * alpha)), anchor="mm")
+                    x += gap
+        else:
+            d.text((x + w / 2, y + h / 2), text, font=self.f_key, fill=(255, 255, 255, int(255 * alpha)), anchor="mm")
 
     def corner(self, ov, text):
         s = self.s
@@ -380,32 +912,165 @@ class Painter:
         d.text((x + 8 * s, y + 10 * s), text, font=self.f_small, fill=(230, 230, 230, 230), anchor="lm")
 
 
+class Framer:
+    """Puts each frame on a background (a colour or a diagonal two-colour gradient) with padding, rounded
+    corners and a soft shadow. The output grows by the padding, so the recording keeps its full size."""
+
+    def __init__(self, w, h, stops):
+        s = w / 1280
+        self.px, self.py = round(w * 0.04) // 2 * 2, round(h * 0.06) // 2 * 2
+        self.w, self.h = w + 2 * self.px, h + 2 * self.py
+        yy, xx = np.mgrid[0:self.h, 0:self.w]
+        u = ((xx / self.w + yy / self.h) / 2)[..., None]
+        a, b = np.array(stops[0], float), np.array(stops[-1], float)
+        bg = a * (1 - u) + b * u
+        box = Image.new("L", (self.w, self.h))
+        self.r = round(14 * s)
+        ImageDraw.Draw(box).rounded_rectangle([self.px, self.py + round(10 * s), self.px + w, self.py + h + round(10 * s)], radius=self.r, fill=255)
+        shade = np.asarray(box.filter(ImageFilter.GaussianBlur(24 * s)), float)[..., None] / 255 * 0.35
+        self.bg = (bg * (1 - shade)).astype(np.uint8)
+        corner = Image.new("L", (2 * self.r, 2 * self.r))
+        ImageDraw.Draw(corner).ellipse([0, 0, 2 * self.r - 1, 2 * self.r - 1], fill=255)
+        self.round = np.asarray(corner.resize((self.r, self.r), Image.LANCZOS, box=(0, 0, self.r, self.r)), float)[..., None] / 255
+        self.fw, self.fh = w, h
+
+    def __call__(self, frame):
+        out = self.bg.copy()
+        x, y, w, h, r = self.px, self.py, self.fw, self.fh, self.r
+        out[y:y + h, x:x + w] = frame
+        for flip_y in (False, True):  # blend the four corners into the background
+            for flip_x in (False, True):
+                m = self.round[::-1 if flip_y else 1, ::-1 if flip_x else 1]
+                ys = slice(y + h - r, y + h) if flip_y else slice(y, y + r)
+                xs = slice(x + w - r, x + w) if flip_x else slice(x, x + r)
+                out[ys, xs] = (frame[ys.start - y:ys.stop - y, xs.start - x:xs.stop - x] * m + self.bg[ys, xs] * (1 - m)).astype(np.uint8)
+        return out
+
+
+def tag_at(w, h, rot, s, at=TAG["figma"]["at"]):
+    """Top-left of a w x h name tag off the tip, behind the arrow as it turns by rot (Figma's tags trail the
+    arrow): its near corner at rest, its near edge's middle when the arrow points straight across."""
+    a = np.arctan2(at[1], at[0]) + rot
+    dx, dy = np.cos(a), np.sin(a)
+    d = np.hypot(*at) * s
+    # the tag switches side once the body leans past 17° off straight down (dx 0.3, about where "aim" turns it):
+    # Figma's then hangs below the arrow aimed up right, its right edge a third of the gap past the tip
+    side = np.clip((dx - 0.3) * 40, -1, 1)  # a 3° band: it jumps sides, never resting centred
+    cx, cy = d * dx + w / 2 * side + d / 3 * max(0, -side), d * dy + h / 2 * np.clip(dy * 10, -1, 1)
+    return round(cx - w / 2), round(cy - h / 2)
+
+
+
+def k_float(since):
+    """The float eases in over its first second, so the pointer leaves its press point gently."""
+    return ease(since) * FLOAT_AMP
+
+
+def cap_in(u):
+    """A step caption u of the way through its fade (0 hidden, 1 shown): (alpha, px it sits low)."""
+    return 1 - (1 - u) ** 3, (1 - u) ** 3 * 10  # ease-out cubic in, so ease-in on the way out
+
+
+def fade(im, alpha):
+    im = im.copy()
+    im.putalpha(im.getchannel("A").point(lambda v: int(v * alpha)))
+    return im
+
+
 def blend(frame, ov):
     """Alpha-composite the RGBA overlay onto the RGB frame in place, only inside the overlay's bounding box."""
     box = ov.getbbox()
     if box:
         x0, y0, x1, y1 = box
-        o = np.asarray(ov.crop(box), dtype=np.float32)
-        a = o[:, :, 3:4] / 255
-        frame[y0:y1, x0:x1] = (frame[y0:y1, x0:x1].astype(np.float32) * (1 - a) + o[:, :, :3] * a).astype(np.uint8)
+        o, im = ov.crop(box), Image.fromarray(frame[y0:y1, x0:x1])
+        im.paste(o, (0, 0), o)  # PIL's own blend: ten times numpy's float path on a full-frame box
+        frame[y0:y1, x0:x1] = np.asarray(im)
+
+
+def crop_box(region, W, H, space):
+    """Region (event-space [x,y,w,h]) -> its pixel box (x0, y0, x1, y1) in a W x H frame, at least 2 px."""
+    x, y, w, h = region
+    x0, y0 = min(max(round(x * W / space[0]), 0), W - 2), min(max(round(y * H / space[1]), 0), H - 2)
+    x1, y1 = min(max(x0 + 2, round((x + w) * W / space[0])), W), min(max(y0 + 2, round((y + h) * H / space[1])), H)
+    return x0, y0, x1, y1
 
 
 def zoom_frame(frame, region, space):
     """Crop `region` (event-space [x,y,w,h]) out of the frame and scale it back to the frame size."""
     H, W = frame.shape[:2]
-    x, y, w, h = region
-    x0, y0 = min(max(round(x * W / space[0]), 0), W - 2), min(max(round(y * H / space[1]), 0), H - 2)
-    x1, y1 = min(max(x0 + 2, round((x + w) * W / space[0])), W), min(max(y0 + 2, round((y + h) * H / space[1])), H)
-    return cv2.resize(frame[y0:y1, x0:x1], (W, H), interpolation=cv2.INTER_LINEAR)
+    x0, y0, x1, y1 = crop_box(region, W, H, space)
+    return cv2.resize(frame[y0:y1, x0:x1], (W, H), interpolation=cv2.INTER_CUBIC)
 
 
 # ---------------------------------------------------------------- render
 
 def encoder_args():
-    """NVENC when a one-frame probe encode works (the -encoders list only says it was compiled in), else libx264."""
-    ok = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
-                         "-c:v", "h264_nvenc", "-f", "null", "-"], capture_output=True).returncode == 0
-    return ["-c:v", "h264_nvenc", "-preset", "p5", "-cq", "27"] if ok else ["-c:v", "libx264", "-crf", "23"]
+    """AV1, else HEVC, on the GPU when a one-frame probe encode works (the -encoders list only says it was
+    compiled in), else libx264. On a 1440p game clip av1_nvenc cq 35 measured VMAF 98.5 at about 10 Mbps, where
+    hevc_nvenc needed cq 29 for 97.5 at the same rate (AV1 plays in every browser; on Apple only from A17 Pro / M3).
+    x264's default 16 px motion search cannot follow a scrolling page and bloats it about tenfold: umh with a
+    64 px range can."""
+    for args in (["-c:v", "av1_nvenc", "-preset", "p7", "-cq", "35"],
+                 ["-c:v", "hevc_nvenc", "-preset", "p7", "-cq", "29", "-tag:v", "hvc1"]):
+        if subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=s=256x256", "-frames:v", "1",
+                           *args[:2], "-f", "null", "-"], capture_output=True).returncode == 0:
+            return args
+    return ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-x264-params", "me=umh:merange=64"]
+
+
+IDLE_EDGE_S = 0.3  # an idle span starts and ends this far inside its quiet gap, so motion around it plays at 1x
+
+
+def idle_spans(gs, keys, steps, after):
+    """Wall-time spans [a, b] with nothing to follow for more than `after` seconds: no glide, press or ring
+    (0.8 s before a press to 1 s after), no key pill, no step caption appearing (its first 1.5 s)."""
+    busy = sorted([(g["t0"] - 0.8, g["t1"] + 1.0) for g in gs] + [(k["t0"] - 0.3, k["t1"]) for k in keys]
+                  + [(st["from"] - 0.3, st["from"] + 1.5) for st in steps])
+    spans, end = [], -np.inf
+    for a, b in busy:
+        if end > -np.inf and a - end > after:
+            spans.append((end + IDLE_EDGE_S, a - IDLE_EDGE_S))
+        end = max(end, b)
+    return spans
+
+
+def read_frames(pipe, size):
+    """Frames of `size` bytes from a pipe, read ahead on a thread so decoding overlaps drawing."""
+    q = Queue(maxsize=8)
+
+    def run():
+        while (buf := pipe.read(size)) and len(buf) == size:
+            q.put(buf)
+        q.put(None)
+
+    Thread(target=run, daemon=True).start()
+    return iter(q.get, None)
+
+
+class FrameWriter:
+    """Writes frames to a pipe on a thread so encoding overlaps drawing; a dead encoder is reported by close()."""
+
+    def __init__(self, pipe):
+        self.pipe, self.q, self.error = pipe, Queue(maxsize=8), None
+        self.thread = Thread(target=self.run, daemon=True)
+        self.thread.start()
+
+    def run(self):
+        while (b := self.q.get()) is not None:
+            if self.error is None:
+                try:
+                    self.pipe.write(b)
+                except OSError as e:  # keep draining so put() never blocks forever
+                    self.error = e
+        self.pipe.close()
+
+    def write(self, b):
+        self.q.put(b)
+
+    def close(self):
+        self.q.put(None)
+        self.thread.join()
+        return self.error
 
 
 def frame_indices(times, start, ss, fps, nframes):
@@ -437,7 +1102,14 @@ def render(args):
     doc = json.loads(Path(args.events).read_text(encoding="utf-8"))
     space = parse_space(doc, "events")
     gs = shift(gestures(doc["events"]), args.offset)
+    keys = key_items(doc["events"], args.offset)
+    pointer = doc.get("pointer", "touch")
+    style = load_style(doc, args.preset)
+    if pointer not in POINTERS:
+        sys.exit(f"events: pointer must be one of {', '.join(POINTERS)}, got {pointer!r}")
     steps = load_steps(args.steps) if args.steps else []
+    for st in steps:
+        st["anchor"] = step_anchor(st, gs)
     masks, mspace = load_masks(args.masks) if args.masks else ([], space)
     start = hms(args.start)
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
@@ -448,64 +1120,87 @@ def render(args):
     num, den = map(int, st["r_frame_rate"].split("/"))
     fps = num / den
     ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
-    print(f"[annotate] {len(gs)} gestures, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
+    print(f"[annotate] {len(gs)} gestures, {len(keys)} key pills, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
-    paint = Painter(W, H, space, pick_font(args.font))
+    paint = Painter(W, H, space, pick_font(args.font), style)
+    track = paint.track(gs) if pointer == "mouse" and gs else None
+    cam = Camera(gs, keys, space, style["zoom"]) if style["zoom"] > 1 else None
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
-    enc = None if args.no_video else subprocess.Popen(
-        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{W}x{H}", "-r", f"{num}/{den}",
-         "-i", "-", *encoder_args(), "-pix_fmt", "yuv420p", "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
+    framer = Framer(W, H, style["frame"]) if style["frame"] else None
+    OW, OH = (framer.w, framer.h) if framer else (W, H)
+    enc = None if args.no_video else subprocess.Popen(  # the crop keeps both sides even, as 4:2:0 needs
+        ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}", "-r", f"{num}/{den}",
+         "-i", "-", "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *encoder_args(), "-pix_fmt", "yuv420p",
+         "-movflags", "+faststart", args.out], stdin=subprocess.PIPE)
     n, size, gi = 0, W * H * 3, 0
-    while (buf := dec.stdout.read(size)) and len(buf) == size:
+    out = FrameWriter(enc.stdin) if enc else None
+    fast = idle_spans(gs, keys, steps, args.idle_after) if args.idle_speed > 1 else []
+    if fast:
+        print(f"[annotate] {len(fast)} idle spans at {args.idle_speed}x, {sum(b - a for a, b in fast):.1f}s of wall time", flush=True)
+    kept = 0
+    for buf in read_frames(dec.stdout, size):
         tv = n / fps  # clip time
         t = start + ss + tv  # wall time
+        span = next((sp for sp in fast if sp[0] <= t < sp[1]), None)
+        if span and round((t - span[0]) * fps) % args.idle_speed and n not in want:  # dropped: skip the drawing
+            n += 1
+            continue
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
         apply_masks(frame, tv, masks, spans, mspace)
         cur = step_at(steps, t)
+        view = cam.region(t) if cam else None
+        region = (zoom_region(cur[1], t, space, view) if cur else None) or view
+        paint.view = None
+        if region:  # zoom the picture first, then draw on it through the zoom: overlays stay sharp
+            frame = zoom_frame(frame, region, space)
+            x0, y0, x1, y1 = crop_box(region, W, H, space)
+            paint.view = (x0, y0, W / (x1 - x0), H / (y1 - y0))
         ov = Image.new("RGBA", (W, H))
         d = ImageDraw.Draw(ov)
-        if cur:  # boxes and touches live in the zoomed picture
+        if cur:
             for x, y, w, h, *label in cur[1].get("boxes", []):
                 paint.box(d, x, y, w, h, label[0] if label else "", cur[2])
         while gi < len(gs) and gs[gi]["t1"] + 0.7 < t:
             gi += 1
         j = gi
         while j < len(gs) and gs[j]["t0"] - 0.3 <= t:
-            paint.gesture(ov, d, gs[j], t)
+            paint.gesture(ov, d, gs[j], t, pointer)
             j += 1
+        if track:
+            paint.cursor(ov, track, gs, t)
         blend(frame, ov)
-        region = zoom_region(cur[1], t, space) if cur else None
-        if region:
-            frame = zoom_frame(frame, region, space)
         ov = Image.new("RGBA", (W, H))  # captions stay put
+        covered = 0
         if cur:
             i, step, alpha = cur
-            pan = paint.panel(i + 1, step["title"], step.get("note"))
-            if alpha < 1:
-                pan = pan.copy()
-                pan.putalpha(pan.getchannel("A").point(lambda v: int(v * alpha)))
-            ov.alpha_composite(pan, ((W - pan.width) // 2, H - pan.height - round(8 * paint.s)))
-        paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else ""))
+            covered = paint.caption(ov, step, i + 1, len(steps), alpha, step.get("anchor"))
+        if k := key_at(keys, t):  # above a bottom caption
+            paint.keys(ov, k[0], t, k[1], H - round(24 * paint.s) - (covered and covered - round(12 * paint.s)))
+        paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else "") + (f"  ·  快轉 {args.idle_speed}×" if span else ""))
         blend(frame, ov)
+        if framer:
+            frame = framer(frame)
         if n in want:
             png = Path(args.out).with_name(f"{Path(args.out).stem}_{fmt(t, 3).replace(':', '')}.png")
             Image.fromarray(frame).save(png)
             print(f"[annotate] frame {png}", flush=True)
-        if enc:
-            enc.stdin.write(frame.tobytes())
+        if out and not (span and round((t - span[0]) * fps) % args.idle_speed):
+            out.write(frame.tobytes())
+            kept += 1
         n += 1
         if n % 1800 == 0:
             print(f"[annotate] {n} frames ({tv:.0f}s)", flush=True)
-    if enc:
-        enc.stdin.close()
+    if out:
+        out.close()
         enc.wait()
     dec.wait()
     if n == 0 or dec.returncode or (enc and enc.returncode):
         sys.exit(f"no output: ffmpeg decode rc {dec.returncode}, encode rc {enc.returncode if enc else '-'}, {n} frames "
                  f"(check VIDEO, --from/--to and --start)")
-    print(f"[annotate] done ({n} frames)" + ("" if args.no_video else f", wrote {args.out}"), flush=True)
+    print(f"[annotate] done ({n} frames" + (f", {kept} written" if kept != n and not args.no_video else "") + ")"
+          + ("" if args.no_video else f", wrote {args.out}"), flush=True)
 
 
 def main(argv=None):
@@ -519,6 +1214,9 @@ def main(argv=None):
     ap.add_argument("--from")
     ap.add_argument("--to")
     ap.add_argument("--offset", type=float, default=0.0)
+    ap.add_argument("--idle-speed", type=int, default=1, help="play quiet stretches this many times faster (1 = off)")
+    ap.add_argument("--idle-after", type=float, default=2.0, help="seconds without activity before a stretch speeds up")
+    ap.add_argument("--preset", default="evidence", help=f"the look: {', '.join(PRESETS)}; events.json style overrides it")
     ap.add_argument("--frames")
     ap.add_argument("--font")
     ap.add_argument("--no-video", action="store_true")
