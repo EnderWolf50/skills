@@ -49,7 +49,7 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill"}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": 0.0, "glow": False}}
@@ -208,6 +208,8 @@ def load_style(doc):
         sys.exit(f"events: style.glow must be true or false, got {st['glow']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
+    if not isinstance(st["dot"], bool):
+        sys.exit(f"events: style.dot must be true or false, got {st['dot']!r}")
     if st["caption"] not in CAPTIONS:
         sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
@@ -710,7 +712,8 @@ class Painter:
 
     # --- caption panel (cached per text, faded by alpha)
     def capsule(self, n, total, title):
-        """The pill / chapter caption: a translucent dark capsule, "n/total", a hairline, the title."""
+        """The pill / chapter caption: a translucent dark capsule, an amber dot (style.dot), "n/total", a hairline,
+        the title."""
         key = ("capsule", n, total, title)
         if key not in self.cache:
             s = self.s
@@ -718,13 +721,17 @@ class Painter:
             num = f"{n}/{total}"
             nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
             pad, gap = 32 * s, 16 * s
-            w, h = round(pad * 2 + nw + gap * 2 + tw), round(64 * s)
+            dot = 16 * s if self.style["dot"] else 0  # its diameter
+            w, h = round(pad * 2 + (dot and dot + gap * 0.75) + nw + gap * 2 + tw), round(64 * s)
             im = Image.new("RGBA", (w, h))
             d = ImageDraw.Draw(im)
             d.rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(h / 2, 32 * s)), fill=(15, 17, 24, 170))
             cy = 32 * s
-            d.text((pad, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
-            lx = pad + nw + gap
+            if dot:
+                d.ellipse([pad, cy - dot / 2, pad + dot, cy + dot / 2], fill=(255, 196, 64, 255))
+            x = pad + (dot and dot + gap * 0.75)
+            d.text((x, cy), num, font=self.f_cap_n, fill=(255, 255, 255, 140), anchor="lm")
+            lx = x + nw + gap
             d.line([(lx, cy - 14 * s), (lx, cy + 14 * s)], fill=(255, 255, 255, 64), width=max(1, round(2 * s)))
             d.text((lx + gap, cy), title, font=self.f_cap, fill=(255, 255, 255, 255), anchor="lm")
             self.cache[key] = im

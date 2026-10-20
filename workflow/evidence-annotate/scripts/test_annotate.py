@@ -293,7 +293,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is True
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -413,6 +413,14 @@ def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
     covered = p.caption(ov, {"title": "Save", "note": "closes the form"}, 2, 3, 1.0, (900, 400))
     assert ov.getbbox() is not None
     assert (covered > 0) == (kind == "pill")
+
+
+def test_dot_adds_an_amber_dot_before_the_step_number():
+    def amber(dot):
+        p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"dot": dot}}))
+        r, g, b, al = np.asarray(p.capsule(2, 5, "Save")).astype(int).transpose(2, 0, 1)
+        return int(((al > 200) & (r > 230) & (g > 170) & (g < 220) & (b < 100)).sum())
+    assert amber(False) == 0 < amber(True)
 
 
 def test_zoom_true_is_the_default_magnification():
