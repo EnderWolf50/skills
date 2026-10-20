@@ -292,13 +292,22 @@ def test_glide_bows_unless_arc_is_zero_and_leans_unless_tilt_is_zero():
 def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
     gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:04.0", "tap", 900, 300), ev("10:00:07.0", "tap", 300, 300)])
     tr = track(gs, tilt="aim")
-    mirror = 2 * (-np.pi / 2 - a.TIPS["mac"])
+    mirror = a.AIM_TURN
     t = lambda s: a.hms(s)
     assert tr.aim(t("10:00:02.0")) == 0  # target to the left of nothing yet: the usual arrow
     peak = max(tr.aim(t("10:00:03.0") + k / 60) for k in range(120))
     assert tr.aim(t("10:00:06.0")) == pytest.approx(mirror, abs=0.01) and peak > mirror * 1.1  # overshoots, settles
     assert tr.aim(t("10:00:09.5")) == pytest.approx(0, abs=0.01)  # the next target lies left: back
     assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
+
+
+def test_lean_grows_with_speed():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 1100, 300)])
+    tr = track(gs, cursor="cua")
+    start, _, traj, _ = tr.glides[0]
+    turns = [abs(a.lean(traj, u, traj.sample_at(u)[3])) for u in (0.02, traj.arrival / 2)]
+    assert turns[0] < 0.1 * turns[1] and turns[1] > 0.3  # barely turned while starting, leaning at full speed
+    assert a.lean(None, 0, a.cm.REST_HEADING) == 0
 
 
 def test_style_fills_defaults_and_rejects_bad_values():

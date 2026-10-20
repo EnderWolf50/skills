@@ -65,7 +65,10 @@ SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (1
           "figma": [(0, 0), (0, 14), (4, 10.5), (10.5, 10.5)]}
 TIPS = {"mac": float(np.arctan2(-1, -0.62)), "figma": float(np.arctan2(-1, -0.75)), "cua": cm.TIP_ANGLE}
 AIM = (2 * np.pi * 1.6, 0.4)  # "tilt": "aim" swings on a spring (rad/s, damping ratio): about 25 % overshoot, as in
-# Figma's own cursor animation, which mirrors the arrow about its tip when the next target lies to its right
+# Figma's own cursor animation, which turns the arrow about its tip toward a target on its right
+AIM_TURN = np.radians(40)  # Figma's arrow turns 42 degrees
+AIM_MIN_DX = 60  # px of a 1280-wide frame: a target closer to straight above or below keeps the current side
+LEAN = (300, 1500)  # px/s of a 1280-wide frame: no lean into the motion below the first, the full tilt from the second
 # Cua Driver's cursor body (cursor-overlay/assets/build_default_theme.py CURSOR_PATH via @trycua/cursor-motion,
 # MIT) on its 128-unit canvas, tip at (55, 30), and the glow strokes under it: (width, opacity)
 CUA_PATH = ("M55 30 C48 28 42 33 43 41 C43 41 64 98 64 98 C67 106 73 106 77 99 C77 99 86 79 86 79 "
@@ -177,11 +180,10 @@ class Track:
                 traj = traj.scaled(gap / traj.arrival)
             self.glides.append((g["t0"] - traj.arrival, g, traj, b))
         self.moving = sorted([(st, st + tr.duration()) for st, _, tr, _ in self.glides] + [(g["t0"], g["t1"]) for g in gs])
-        mirror = 2 * (-np.pi / 2 - TIPS[style["cursor"]])  # the turn that mirrors the arrow about the vertical
         self.swings, side = [], 0.0  # aim: (start s, from, to) each time the next target changes side
         for st, g, tr, b in self.glides:
             dx = b[0] - tr.samples[0][1]
-            to = mirror if dx > 4 else 0.0 if dx < -4 else side
+            to = AIM_TURN if dx > AIM_MIN_DX else 0.0 if dx < -AIM_MIN_DX else side
             if to != side:
                 self.swings.append((st, side, to))
                 side = to
@@ -214,6 +216,15 @@ class Track:
             _, sx, sy, h = gl[2].sample_at(t - gl[0])
             return x + sx - gl[3][0], y + sy - gl[3][1], h, gl[2], t - gl[0]
         return x, y, cm.REST_HEADING, None, 0.0
+
+
+def lean(traj, t, heading):
+    """The pointer's turn into the motion (rad): the trajectory's heading, scaled by speed between LEAN's bounds, so
+    a slow or short move stays nearly upright and a fast one leans fully."""
+    rot = (heading - cm.REST_HEADING + np.pi) % (2 * np.pi) - np.pi
+    if traj is None:
+        return rot
+    return rot * ease((np.hypot(*traj.velocity_at(t)) - LEAN[0]) / (LEAN[1] - LEAN[0]))
 
 
 def load_style(doc):
@@ -682,7 +693,7 @@ class Painter:
             gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * FX)  # glow sits off the body by FX x Cua's offset
             self.radial(ov, *self.vp((gx + (g[0] - gx) * FX) * s, (gy + (g[1] - gy) * FX) * s), g[2] * FX * s, fx, g[3])
         im, half = self.sprite(press_k(gs, t))
-        rot = track.aim(t) if self.style["tilt"] == "aim" else heading - cm.REST_HEADING
+        rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
         if self.style["float"] and since > 0:  # Cua's resting drift: a slow 4 s loop, a few points and degrees
             a = (since % 4) / 4 * 2 * np.pi
