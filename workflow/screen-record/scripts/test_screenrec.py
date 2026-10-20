@@ -10,6 +10,9 @@ uv run test_screenrec.py
 import argparse
 import json
 import os
+import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -59,6 +62,16 @@ def test_capture_chain_shifts_pts_to_the_wall_clock_start():
     c = screenrec.capture_chain(4242, 0, 1_700_000_000_000_000)
     assert "st(0\\,RTCTIME)" in c and "ld(0)-1700000000000000" in c
     assert c.index("setpts") < c.index("hwdownload")  # stamped as captured, before the download
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_the_shift_puts_the_first_frame_at_its_wall_clock_offset():
+    t0 = int(time.time() * 1e6) - 500_000  # recording started half a second before the first frame
+    expr = screenrec.capture_chain(1, 0, t0).split(",setpts=")[1].split(",hwdownload")[0]
+    r = subprocess.run(["ffmpeg", "-v", "info", "-f", "lavfi", "-i", "testsrc=size=32x32:rate=30", "-frames:v", "2",
+                        "-vf", f"setpts={expr},showinfo", "-f", "null", "-"], capture_output=True, text=True)
+    first = float(re.search(r"n:\s*0 .*?pts_time:([\d.]+)", r.stderr).group(1))
+    assert 0.4 < first < 3  # not RTCTIME itself: st() returns the value it stores
 
 
 def test_is_black_uses_mean_brightness():

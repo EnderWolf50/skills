@@ -77,7 +77,6 @@ TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip a
 TAG_H = 64  # name tag height, the same for every cursor
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
-PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
 
 # pointer outlines in pointer units (3.2 px at 1280 wide), tip at 0,0, and where each tip points at rest
 SHAPES = {"mac": [(0, 0), (0, 17), (4.5, 13), (7.5, 20), (10, 19), (7, 12.5), (12.5, 12.5)],
@@ -206,7 +205,7 @@ class Track:
             dx = b[0] - tr.samples[0][1]
             to = AIM_TURN if dx > AIM_MIN_DX else 0.0 if dx < -AIM_MIN_DX else side
             if to != side:
-                self.swings.append((st, side, to))
+                self.swings.append((st, self.aim(st), to))  # from where the last swing has got to
                 side = to
 
     def aim(self, t):
@@ -252,6 +251,8 @@ def load_style(doc, preset="evidence"):
     """events.json "style" over PRESETS[preset] over STYLE, checked: cursor one of CURSORS, color #rrggbb (-> RGB tuple)."""
     if preset not in PRESETS:
         sys.exit(f"--preset must be one of {', '.join(PRESETS)}, got {preset!r}")
+    if not isinstance(doc.get("style", {}), dict):
+        sys.exit(f"events: style must be an object, got {doc['style']!r}")
     st = {**STYLE, **PRESETS[preset], **doc.get("style", {})}
     if unknown := set(st) - set(STYLE):
         sys.exit(f"events: unknown style keys {sorted(unknown)}; known: {', '.join(STYLE)}")
@@ -264,8 +265,11 @@ def load_style(doc, preset="evidence"):
         sys.exit(f"events: style.click must be one of {', '.join(CLICKS)}, got {st['click']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
-    if not isinstance(st["dot"], bool):
-        sys.exit(f"events: style.dot must be true or false, got {st['dot']!r}")
+    for k in ("dot", "float") + (() if st["trail"] is None else ("trail",)):
+        if not isinstance(st[k], bool):
+            sys.exit(f"events: style.{k} must be true or false, got {st[k]!r}")
+    if not isinstance(st["label"], str):
+        sys.exit(f"events: style.label must be text, got {st['label']!r}")
     if st["caption"] not in CAPTIONS:
         sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
@@ -307,7 +311,7 @@ def press_k(gs, t, k=PRESS_K):
             p += 1 - (1 - min(u, 1)) ** 3
         elif 0 <= (v := (t - g["t1"]) / RELEASE_S) <= 1:
             p += -(1.7 + 1) * (v - 1) ** 3 - 1.7 * (v - 1) ** 2  # 1 - back-out(v): 1 at the release, dips below 0, ends at 0
-    return 1 - (1 - k) * p
+    return 1 - (1 - k) * min(p, 1)  # a quick second press can catch the first's rebound
 
 
 KEY_HOLD_S = 1.0  # a key pill stays this long after its last key
@@ -440,7 +444,7 @@ class Camera:
         self.spans = []  # (from, to, z, cx, cy): the target while t is inside
         for i, (grp, r) in enumerate(groups):
             z = fit(grp)
-            drag = len({(x, y) for g in grp for _, x, y in g["pts"]}) > 1
+            drag = any(g["kind"] == "drag" for g in grp)
             if z < CAM_WIDE or not (len(grp) > 1 or drag or alone(r)):
                 continue
             t1 = max([g["t1"] for g in grp] + [k["t1"] for k in keys if grp[0]["t0"] <= k["t0"]
@@ -481,13 +485,14 @@ class Camera:
         return min(max(cx - w / 2, 0), sw - w), min(max(cy - h / 2, 0), sh - h), w, h
 
 
-def zoom_region(step, t, space):
-    """Region [x,y,w,h] of `space` shown at time t: eases from the full frame into step["zoom"] and back out."""
+def zoom_region(step, t, space, base=None):
+    """Region [x,y,w,h] of `space` shown at time t: eases from base (the camera's view, else the full frame) into
+    step["zoom"] and back out."""
     z = step.get("zoom")
     if not z:
         return None
     p = ease(min((t - step["from"]) / ZOOM_S, (step["to"] - t) / ZOOM_S))
-    full, tgt = (0, 0, *space), fit_region(z, space)
+    full, tgt = base or (0, 0, *space), fit_region(z, space)
     return tuple(a + (b - a) * p for a, b in zip(full, tgt))
 
 
@@ -977,9 +982,9 @@ def blend(frame, ov):
     box = ov.getbbox()
     if box:
         x0, y0, x1, y1 = box
-        o = np.asarray(ov.crop(box), dtype=np.float32)
-        a = o[:, :, 3:4] / 255
-        frame[y0:y1, x0:x1] = (frame[y0:y1, x0:x1].astype(np.float32) * (1 - a) + o[:, :, :3] * a).astype(np.uint8)
+        o, im = ov.crop(box), Image.fromarray(frame[y0:y1, x0:x1])
+        im.paste(o, (0, 0), o)  # PIL's own blend: ten times numpy's float path on a full-frame box
+        frame[y0:y1, x0:x1] = np.asarray(im)
 
 
 def crop_box(region, W, H, space):
@@ -1145,7 +1150,8 @@ def render(args):
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3).copy()
         apply_masks(frame, tv, masks, spans, mspace)
         cur = step_at(steps, t)
-        region = (zoom_region(cur[1], t, space) if cur else None) or (cam.region(t) if cam else None)
+        view = cam.region(t) if cam else None
+        region = (zoom_region(cur[1], t, space, view) if cur else None) or view
         paint.view = None
         if region:  # zoom the picture first, then draw on it through the zoom: overlays stay sharp
             frame = zoom_frame(frame, region, space)

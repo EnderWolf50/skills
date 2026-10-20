@@ -322,7 +322,7 @@ def test_style_fills_defaults_and_rejects_bad_values():
     st = a.load_style({"style": {"cursor": "figma", "color": "#8b5cf6"}})
     assert st["color"] == (0x8B, 0x5C, 0xF6) and st["trail"] is None  # resolved by pointer: a mouse cursor draws no drag trail
     assert a.load_style({"style": {"cursor": "cua"}})["color"] == (0x5E, 0xC0, 0xE8)  # Cua blue by default
-    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}, {"label_text": "white"}):
+    for bad in ({"cursor": "windows"}, {"color": "blue"}, {"colour": "#000000"}, {"motion": "magnetic"}, {"tilt": 2}, {"dot": "yes"}, {"glow": 1}, {"size": 5}, {"click": "pop"}, {"label_text": "white"}, {"float": "false"}, {"trail": "no"}, {"label": 5}):
         with pytest.raises(SystemExit):
             a.load_style({"style": bad})
 
@@ -491,3 +491,15 @@ def test_label_colours_override_the_pointer_colour():
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "figma", "label": "Kerati", "label_color": "#ffffff", "label_text": "#000000"}}))
     im, m = p.tag()
     assert im.getpixel((m + 2, m + im.height // 4))[:3] == (255, 255, 255)  # the tag's fill, not the pointer's blue
+
+
+def test_bad_style_shapes_are_errors_not_tracebacks():
+    with pytest.raises(SystemExit):
+        a.load_style({"style": "demo"})
+
+
+def test_a_step_zoom_eases_from_the_camera_view_not_the_full_frame():
+    step = {"from": 1.0, "to": 5.0, "zoom": [100, 100, 400, 225]}
+    view = (200, 60, 640, 360)
+    assert a.zoom_region(step, 1.0, SPACE, view) == pytest.approx(view)  # no jump when the step starts or ends
+    assert a.zoom_region(step, 5.0, SPACE, view) == pytest.approx(view)

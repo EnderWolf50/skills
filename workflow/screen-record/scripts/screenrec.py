@@ -78,7 +78,7 @@ def capture_chain(hwnd, crop_top, t0_us=None, cursor=False):
 
     gfxcapture stamps its first frame 0, however long ffmpeg took to start. With t0_us (wall clock, epoch
     microseconds) every frame is shifted by the first frame's wall time minus t0_us, so pts 0 is t0_us."""
-    shift = (f",setpts=if(eq(N\\,0)\\,st(0\\,RTCTIME))+PTS+(ld(0)-{t0_us})/1000000/TB" if t0_us is not None else "")
+    shift = (f",setpts=0*if(eq(N\\,0)\\,st(0\\,RTCTIME))+PTS+(ld(0)-{t0_us})/1000000/TB" if t0_us is not None else "")
     return f"gfxcapture=hwnd={hwnd}:capture_cursor={str(cursor).lower()}:max_framerate={FPS}:crop_top={crop_top}{shift},hwdownload,format=bgra"
 
 
