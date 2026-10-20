@@ -54,7 +54,7 @@ STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": 0.0, "glow": False}}
 CURSORS = ("mac", "cua", "figma")
-CAPTIONS = ("pill", "callout", "chapter")  # bottom-centre capsule, a card beside the step's press, top-left capsule
+CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
@@ -773,57 +773,24 @@ class Painter:
             self.cache[key] = im
         return self.cache[key]
 
-    def callout(self, n, title):
-        """The callout card: white, soft shadow, "STEP n" in the accent colour over the title; (image, shadow margin)."""
-        key = ("callout", n, title)
-        if key not in self.cache:
-            s = self.s
-            probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-            pad, m = 28 * s, round(32 * s)
-            w, h = round(2 * pad + probe.textlength(title, font=self.f_cap)), round(84 * s)
-            im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
-            shade = Image.new("L", im.size)
-            ImageDraw.Draw(shade).rounded_rectangle([m, m + 8 * s, m + w, m + h + 8 * s], radius=round(20 * s), fill=255)
-            im.paste((0, 0, 0, 255), (0, 0), shade.filter(ImageFilter.GaussianBlur(14 * s)).point(lambda v: int(v * 0.18)))
-            d = ImageDraw.Draw(im)
-            d.rounded_rectangle([m, m, m + w, m + h], radius=round(20 * s), fill=(255, 255, 255, 255))
-            d.text((m + pad, m + 30 * s), f"STEP {n}", font=self.f_cap_n, fill=(*self.color, 255), anchor="lm")
-            d.text((m + pad, m + 62 * s), title, font=self.f_cap, fill=(20, 24, 32, 255), anchor="lm")
-            self.cache[key] = (im, m)
-        return self.cache[key]
-
     def caption(self, ov, step, n, total, alpha, anchor):
-        """Draw the step caption in style.caption; returns how much of the bottom edge it covers (for the key pill)."""
+        """Draw the step caption, the same capsule wherever style.caption puts it; returns how much of the bottom
+        edge it covers (for the key pill)."""
         s, kind = self.s, self.style["caption"]
-        if kind == "callout" and anchor:
-            card, m = self.callout(n, step["title"])
-            X, Y = self.xy(*anchor)
-            w, h = card.width - 2 * m, card.height - 2 * m
-            gap, edge = 40 * s, 16 * s
-            # the pointer and its name tag hang below and right of the tip: try left, above, right, below
-            sides = {"left": (X - gap - w, Y - h / 2), "above": (X - w / 2, Y - gap - h),
-                     "right": (X + gap + 150 * s, Y - h / 2), "below": (X - w / 2, Y + gap + 60 * s)}
-            fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
-            side = next((k for k, xy in sides.items() if fits(xy)), "left")
-            x, y = sides[side]
-            x, y = min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h)
-            card = fade(card, alpha) if alpha < 1 else card.copy()
-            d, a = ImageDraw.Draw(card), int(255 * alpha)
-            k = 14 * s  # the arrow, on the side facing the press
-            if side in ("left", "right"):
-                ax, ay = (m + w, min(max(Y - y, 24 * s), h - 24 * s) + m) if side == "left" else (m, min(max(Y - y, 24 * s), h - 24 * s) + m)
-                tip = ax + (k if side == "left" else -k)
-                d.polygon([(ax, ay - k), (tip, ay), (ax, ay + k)], fill=(255, 255, 255, a))
-            else:
-                ax, ay = min(max(X - x, 24 * s), w - 24 * s) + m, (m + h if side == "above" else m)
-                tip = ay + (k if side == "above" else -k)
-                d.polygon([(ax - k, ay), (ax, tip), (ax + k, ay)], fill=(255, 255, 255, a))
-            self.paste(ov, card, x - m, y - m)
-            return 0
         cap = self.capsule(n, total, step["title"])
         if alpha < 1:
             cap = fade(cap, alpha)
         rise = (1 - ease(alpha)) * 12 * s  # slides up as it fades in
+        if kind == "callout" and anchor:
+            X, Y = self.xy(*anchor)
+            w, h = cap.size
+            gap, edge = 72 * s, 16 * s  # clear of the click ring, which fades out before it grows to 100 px
+            # the pointer and its name tag hang below and right of the tip: try left, above, right, below
+            sides = [(X - gap - w, Y - h / 2), (X - w / 2, Y - gap - h), (X + gap + 150 * s, Y - h / 2), (X - w / 2, Y + gap + 60 * s)]
+            fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
+            x, y = next((xy for xy in sides if fits(xy)), sides[0])
+            self.paste(ov, cap, min(max(x, edge), self.w - edge - w), min(max(y, edge), self.h - edge - h) + rise)
+            return 0
         if kind == "chapter":
             self.paste(ov, cap, 28 * s, 24 * s + rise)
             return 0
