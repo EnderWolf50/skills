@@ -48,7 +48,8 @@ CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter capt
 FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
-PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
+PRESS_S = 0.08  # pointer shrinks to PRESS_K over this long before a press (ease-out), as Figma's snaps down
+RELEASE_S = 0.3  # and springs back over this long after the release (back-out, a 2.5 % overshoot)
 PRESS_K = 0.8
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
          "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
@@ -299,8 +300,13 @@ def rgb(c):
 
 
 def press_k(gs, t, k=PRESS_K):
-    """Pointer scale at t: k while pressed, eased over PRESS_S before the press and after the release."""
-    p = max((min(ease((t - g["t0"] + PRESS_S) / PRESS_S), ease((g["t1"] + PRESS_S - t) / PRESS_S)) for g in gs), default=0)
+    """Pointer scale at t: k while pressed, eased in over PRESS_S before the press, sprung back over RELEASE_S after."""
+    p = 0.0
+    for g in gs:  # presses never overlap, so at most one term is non-zero
+        if 0 <= (u := (t - g["t0"] + PRESS_S) / PRESS_S) and t <= g["t1"]:
+            p += 1 - (1 - min(u, 1)) ** 3
+        elif 0 <= (v := (t - g["t1"]) / RELEASE_S) <= 1:
+            p += -(1.7 + 1) * (v - 1) ** 3 - 1.7 * (v - 1) ** 2  # 1 - back-out(v): 1 at the release, dips below 0, ends at 0
     return 1 - (1 - k) * p
 
 
@@ -641,7 +647,7 @@ class Painter:
     def sprite(self, k):
         """Pointer sprite at press scale k, drawn 4x and scaled down, square with the tip at its centre (so it
         rotates about the tip): (image, half size). Look by style.cursor; cua and figma take style.color."""
-        k = round(k * 25) / 25  # 6 sizes between PRESS_K and 1: each is a 4x draw and blur, so cache few
+        k = round(k * 50) / 50  # a dozen sizes between PRESS_K and the overshoot: each is a 4x draw and blur, so cache few
         if ("sprite", k) in self.cache:
             return self.cache[("sprite", k)]
         kind, rgb = self.style["cursor"], self.color

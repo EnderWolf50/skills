@@ -253,7 +253,8 @@ def test_press_scale_shrinks_before_the_press_and_recovers_after_the_release():
     t0, t1 = g[0]["t0"], g[0]["t1"]
     assert a.press_k(g, t0 - a.PRESS_S - 0.01) == 1
     assert a.press_k(g, t0) == pytest.approx(a.PRESS_K)
-    assert a.press_k(g, t1 + a.PRESS_S + 0.01) == 1
+    assert a.press_k(g, t1 + a.RELEASE_S * 0.6) > 1  # springs a little past full size
+    assert a.press_k(g, t1 + a.RELEASE_S + 0.01) == 1
 
 
 def test_ring_shows_only_after_the_press():
