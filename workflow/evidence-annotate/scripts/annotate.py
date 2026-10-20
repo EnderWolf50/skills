@@ -48,9 +48,11 @@ ZOOM_S = 0.6  # zoom ease-in / ease-out
 RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
 PRESS_S = 0.13  # pointer shrinks to PRESS_K this long before a press and grows back after the release
 PRESS_K = 0.8
-STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": 0.25,
-         "tilt": 1.0, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill"}  # events.json "style"; color None = the
-# cursor's own (COLORS); zoom and idle_fade 0 = off
+STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "signature_arc", "arc": None,
+         "tilt": None, "glow": None, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill"}  # events.json "style"; color None = the
+# cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
+CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
+                 "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": 0.0, "glow": False}}
 CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # bottom-centre capsule, a card beside the step's press, top-left capsule
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
@@ -166,7 +168,8 @@ class Track:
             gap = g["t0"] - prev["t1"]
             if gap < 0.02 or np.hypot(b[0] - a[0], b[1] - a[1]) < 1:
                 continue
-            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=style["tilt"], tip_angle=TIPS[style["cursor"]])
+            traj = cm.plan(a, b, style["motion"], arc_size=style["arc"], tilt=style["tilt"], tip_angle=TIPS[style["cursor"]],
+                           effects={"glow": style["glow"]})
             if traj.arrival > gap:  # the log leaves less time than the move takes: play it faster
                 traj = traj.scaled(gap / traj.arrival)
             self.glides.append((g["t0"] - traj.arrival, g, traj, b))
@@ -200,6 +203,9 @@ def load_style(doc):
         sys.exit(f"events: unknown style keys {sorted(unknown)}; known: {', '.join(STYLE)}")
     if st["cursor"] not in CURSORS:
         sys.exit(f"events: style.cursor must be one of {', '.join(CURSORS)}, got {st['cursor']!r}")
+    st.update({k: v for k, v in CURSOR_MOTION[st["cursor"]].items() if st[k] is None})
+    if not isinstance(st["glow"], bool):
+        sys.exit(f"events: style.glow must be true or false, got {st['glow']!r}")
     if st["motion"] not in cm.STYLES:
         sys.exit(f"events: style.motion must be one of {', '.join(cm.STYLES)}, got {st['motion']!r}")
     if st["caption"] not in CAPTIONS:

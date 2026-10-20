@@ -230,7 +230,7 @@ def track(gs, **style):
 
 def test_track_rests_then_glides_to_arrive_on_the_next_press():
     gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:05.0", "tap", 500, 300)])
-    tr = track(gs)
+    tr = track(gs, cursor="cua")
     start, _, traj, _ = tr.glides[0]
     t1 = gs[1]["t0"]
     assert start == pytest.approx(t1 - traj.arrival)  # the move ends as the press starts
@@ -279,10 +279,12 @@ def test_mouse_pointer_sprite_is_drawn_tip_first_and_clipped_at_the_edge():
 def test_glide_bows_unless_arc_is_zero_and_leans_unless_tilt_is_zero():
     gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 900, 300)])
     def mid(**style):
-        tr = track(gs, **style)
+        tr = track(gs, **{"cursor": "cua", **style})
         start, _, traj, _ = tr.glides[0]
         return tr.at(start + traj.arrival / 2)
     assert abs(mid()[1] - 300) > 30
+    assert mid(cursor="mac")[2] == a.cm.REST_HEADING  # the mac arrow stays upright by default
+    assert abs(mid(cursor="mac")[1] - 300) < abs(mid()[1] - 300)  # and bows less
     assert mid(arc=0)[1] == pytest.approx(300)
     assert mid(tilt=0)[2] == a.cm.REST_HEADING
 
