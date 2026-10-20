@@ -4,7 +4,7 @@
 # ///
 """Record one window with ffmpeg (Windows Graphics Capture, native size at 30 fps, HEVC) to MKV, remuxed to MP4 on stop.
 
-uv run screenrec.py start --window TITLE_SUBSTRING --out DIR [--profile NAME] [--crop-top N]
+uv run screenrec.py start --window TITLE_SUBSTRING --out DIR [--profile NAME] [--crop-top N] [--height N] [--cursor]
 uv run screenrec.py stop   [--profile NAME]
 uv run screenrec.py status [--profile NAME]
 

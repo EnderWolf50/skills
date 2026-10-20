@@ -18,7 +18,6 @@ TIP_ANGLE = -0.75 * math.pi  # where the tip of the resting arrow points
 ANCHOR_OFFSET = 16  # tip to body along the heading, pt
 DEFAULT_FIXED_MS = 1430
 STYLES = ("signature_arc", "spring_settle", "comet_swoop")
-TIMINGS = ("native", "fitts", "fixed", "relaxed", "steady", "calm", "deliberate")
 FLOORS = {"relaxed": 450, "steady": 600, "calm": 750}
 # trail: seconds back, full-strength length, segments, tail and head width, head alpha
 TRAIL = {"secs": 0.18, "fade_len": 60, "steps": 26, "tail_width": 2, "head_width": 12, "alpha": 0.38}

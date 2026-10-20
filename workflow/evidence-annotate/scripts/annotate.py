@@ -6,7 +6,7 @@
 
 uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json \
     [--steps steps.json] [--masks masks.json] [--from T --to T] [--frames T,T,...] [--offset S]
-    [--font FILE] [--no-video]
+    [--idle-speed N [--idle-after S]] [--preset NAME] [--font FILE] [--no-video]
 
 --start   wall time of the first video frame; every other time (events, steps, --from, --to, --frames) is wall time
 --events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}
@@ -57,7 +57,7 @@ STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "labe
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "shrink"},
                  "figma": {"arc": 0.1, "tilt": "aim", "glow": False, "click": "shrink"}}
-CLICKS = {"ring": 0.8, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
+CLICKS = {"ring": PRESS_K, "shrink": 0.75, "sparks": 1.0}  # the mouse pointer's press mark -> its scale while pressed: a
 # ring, Figma's shrink (no ring, about 0.75), Cua's sparks off the tip (no shrink); touch and none always ring
 SPARK_S = 0.25
 PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
@@ -741,17 +741,17 @@ class Painter:
     def cursor(self, ov, track, gs, t):
         """The mouse pointer on its track, its speed glow and comet trail (by style.motion), shrinking while
         pressing; the name tag stays upright beside the tip."""
-        s, fx = self.s, cm.lift(self.color)
+        s, lit = self.s, cm.lift(self.color)
         x, y, heading, traj, lt = track.at(t)
         if traj and "trail" in traj.effects:
             layer = Image.new("RGBA", (self.w, self.h))
             d = ImageDraw.Draw(layer)
             for a, b, w, al in cm.trail(traj, lt, cm.ANCHOR_OFFSET * self.fx):
-                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*fx, int(255 * al)), width=max(1, round(w * self.fx * s)), joint="curve")
+                d.line([self.vp(a[0] * s, a[1] * s), self.vp(b[0] * s, b[1] * s)], fill=(*lit, int(255 * al)), width=max(1, round(w * self.fx * s)), joint="curve")
             ov.alpha_composite(layer)
-        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx))):
-            gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx)  # glow sits off the body by self.fx x Cua's offset
-            self.radial(ov, *self.vp((gx + (g[0] - gx) * self.fx) * s, (gy + (g[1] - gy) * self.fx) * s), g[2] * self.fx * s, fx, g[3])
+        gx, gy = cm.anchor(x, y, heading, cm.ANCHOR_OFFSET * self.fx)  # glow sits off the body, scaled as the pointer
+        if traj and "glow" in traj.effects and (g := cm.glow(traj, lt, (gx, gy))):
+            self.radial(ov, *self.vp((gx + (g[0] - gx) * self.fx) * s, (gy + (g[1] - gy) * self.fx) * s), g[2] * self.fx * s, lit, g[3])
         im, half = self.sprite(press_k(gs, t, CLICKS[self.style["click"]]))
         rot = track.aim(t) if self.style["tilt"] == "aim" else lean(traj, lt, heading)
         since, until = track.rest(t)
@@ -850,10 +850,8 @@ class Painter:
         edge it covers (for the key pill)."""
         s, kind = self.s, self.style["caption"]
         cap = self.capsule(n, total, step["title"])
-        alpha, rise, k = cap_in(alpha)
+        alpha, rise = cap_in(alpha)
         rise *= s
-        if k != 1:
-            cap = cap.resize((round(cap.width * k), round(cap.height * k)), Image.LANCZOS)
         if alpha < 1:
             cap = fade(cap, alpha)
         if kind == "callout" and anchor:
@@ -952,7 +950,7 @@ def tag_at(w, h, rot, s, at=TAG["figma"]["at"]):
     d = np.hypot(*at) * s
     # the tag switches side once the body leans past 17° off straight down (dx 0.3, about where "aim" turns it):
     # Figma's then hangs below the arrow aimed up right, its right edge a third of the gap past the tip
-    side = np.clip((dx - 0.3) * 10, -1, 1)
+    side = np.clip((dx - 0.3) * 40, -1, 1)  # a 3° band: it jumps sides, never resting centred
     cx, cy = d * dx + w / 2 * side + d / 3 * max(0, -side), d * dy + h / 2 * np.clip(dy * 10, -1, 1)
     return round(cx - w / 2), round(cy - h / 2)
 
@@ -964,8 +962,8 @@ def k_float(since):
 
 
 def cap_in(u):
-    """A step caption u of the way through its fade (0 hidden, 1 shown): (alpha, px it sits low, scale)."""
-    return 1 - (1 - u) ** 3, (1 - u) ** 3 * 10, 1  # ease-out cubic in, so ease-in on the way out
+    """A step caption u of the way through its fade (0 hidden, 1 shown): (alpha, px it sits low)."""
+    return 1 - (1 - u) ** 3, (1 - u) ** 3 * 10  # ease-out cubic in, so ease-in on the way out
 
 
 def fade(im, alpha):
