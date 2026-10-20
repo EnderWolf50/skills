@@ -71,9 +71,9 @@ CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside t
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
 COLORS = {"mac": "#4785ff", "cua": "#5ec0e8", "figma": "#4785ff"}
 TAG = {  # name tag at style.size 1, px at 1280 wide: its top-left off the tip at rest, its height; traced off
-    # Figma's (it hangs at the arrow's corner, taller than the arrow) and Cua's (beside the arrow, white-ringed, dark text)
-    "figma": {"at": (58, 60), "h": 80, "ring": False}, "cua": {"at": (46, 33), "h": 52, "ring": True},
-    "mac": {"at": (36, 52), "h": 50, "ring": False}}
+    # Figma's (it hangs at the arrow's corner, taller than the arrow) and Cua's (beside the arrow, rounder and glowing, dark text)
+    "figma": {"at": (58, 60), "h": 80, "glow": False}, "cua": {"at": (46, 33), "h": 52, "glow": True},
+    "mac": {"at": (36, 52), "h": 50, "glow": False}}
 TAG_LAG = (0.06, 48)  # the tag lags the tip by this many seconds, at most this many px: it falls back while gliding
 FX = 2.5  # pointers are drawn this many times Cua's 42 pt cursor, so its glow and trail scale with them
 PX = 1280  # glides are planned in pixels of a 1280-wide frame, about Cua's screen points
@@ -585,7 +585,7 @@ class Painter:
         self.fx = FX * self.style["size"]
         self.tag_spec = TAG[self.style["cursor"]]
         self.tag_h = self.tag_spec["h"] * s * self.style["size"]
-        self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["ring"] else 600)
+        self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
         self.f_key = font(round(22 * s), 600)
         self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
         self.cache = {}
@@ -691,16 +691,16 @@ class Painter:
         if "tag" not in self.cache:  # (image, margin round the body left for Cua's glow)
             h = round(self.tag_h)
             tw = ImageDraw.Draw(Image.new("RGBA", (1, 1))).textlength(self.style["label"], font=self.f_tag)
-            w, m, r = round(tw + 0.64 * h), round(0.3 * h), round(0.15 * h)
+            w, m = round(tw + 0.64 * h), round(0.3 * h)
+            r = round((0.3 if self.tag_spec["glow"] else 0.1) * h)  # Cua's rounder, Figma's squarer
             im = Image.new("RGBA", (w + 2 * m, h + 2 * m))
             body = [m, m, m + w - 1, m + h - 1]
             text = (255, 255, 255, 255)
-            if self.tag_spec["ring"]:  # Cua's: a soft glow in the colour, a white ring, dark text
+            if self.tag_spec["glow"]:  # Cua's: a soft glow in the colour, dark text
                 glow = Image.new("RGBA", im.size)
                 ImageDraw.Draw(glow).rounded_rectangle(body, radius=r, fill=(*self.color, 140))
                 im.alpha_composite(glow.filter(ImageFilter.GaussianBlur(0.12 * h)))
-                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255), outline=(255, 255, 255, 230),
-                                                     width=max(1, round(0.07 * h)))
+                ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255))
                 text = (*(round(c * 0.18) for c in self.color), 255)
             else:
                 ImageDraw.Draw(im).rounded_rectangle(body, radius=r, fill=(*self.color, 255))
