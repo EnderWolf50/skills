@@ -53,6 +53,13 @@ STYLE = {"cursor": "mac", "color": None, "label": "", "trail": True, "motion": "
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False}, "figma": {"arc": 0.1, "tilt": "aim", "glow": False}}
+PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
+    "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
+    "tutorial": {"zoom": True, "caption": "callout", "dot": True},  # steps for someone to follow
+    "demo": {"cursor": "figma", "zoom": True, "float": True, "caption": "callout", "dot": True,
+             "frame": ["#6d5dfc", "#f27b9b"]},  # a showcase to share
+    "agent": {"cursor": "cua", "zoom": True, "float": True, "caption": "chapter", "frame": ["#0f172a", "#1e3a5f"]},  # an AI agent at work
+}
 CURSORS = ("mac", "cua", "figma")
 CAPTIONS = ("pill", "callout", "chapter")  # the capsule bottom centre, beside the step's press, top left
 ZOOM_DEFAULT = 1.5  # "zoom": true (Cap's default for a zoom added by hand; Recordly's autozoom is 1.8)
@@ -227,9 +234,11 @@ def lean(traj, t, heading):
     return rot * ease((np.hypot(*traj.velocity_at(t)) - LEAN[0]) / (LEAN[1] - LEAN[0]))
 
 
-def load_style(doc):
-    """events.json "style" over STYLE, checked: cursor one of CURSORS, color #rrggbb (-> RGB tuple)."""
-    st = {**STYLE, **doc.get("style", {})}
+def load_style(doc, preset="evidence"):
+    """events.json "style" over PRESETS[preset] over STYLE, checked: cursor one of CURSORS, color #rrggbb (-> RGB tuple)."""
+    if preset not in PRESETS:
+        sys.exit(f"--preset must be one of {', '.join(PRESETS)}, got {preset!r}")
+    st = {**STYLE, **PRESETS[preset], **doc.get("style", {})}
     if unknown := set(st) - set(STYLE):
         sys.exit(f"events: unknown style keys {sorted(unknown)}; known: {', '.join(STYLE)}")
     if st["cursor"] not in CURSORS:
@@ -1016,7 +1025,7 @@ def render(args):
     gs = shift(gestures(doc["events"]), args.offset)
     keys = key_items(doc["events"], args.offset)
     pointer = doc.get("pointer", "touch")
-    style = load_style(doc)
+    style = load_style(doc, args.preset)
     if pointer not in POINTERS:
         sys.exit(f"events: pointer must be one of {', '.join(POINTERS)}, got {pointer!r}")
     steps = load_steps(args.steps) if args.steps else []
@@ -1127,6 +1136,7 @@ def main(argv=None):
     ap.add_argument("--offset", type=float, default=0.0)
     ap.add_argument("--idle-speed", type=int, default=1, help="play quiet stretches this many times faster (1 = off)")
     ap.add_argument("--idle-after", type=float, default=2.0, help="seconds without activity before a stretch speeds up")
+    ap.add_argument("--preset", default="evidence", help=f"the look: {', '.join(PRESETS)}; events.json style overrides it")
     ap.add_argument("--frames")
     ap.add_argument("--font")
     ap.add_argument("--no-video", action="store_true")

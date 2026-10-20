@@ -326,6 +326,16 @@ def test_style_fills_defaults_and_rejects_bad_values():
             a.load_style({"style": bad})
 
 
+
+def test_preset_sets_the_look_and_style_overrides_it():
+    for name in a.PRESETS:
+        a.load_style({}, name)  # every preset passes validation
+    st = a.load_style({"style": {"cursor": "cua", "zoom": 0}}, "demo")
+    assert st["frame"] is not None and st["zoom"] == 0 and st["tilt"] == 1.0  # the overriding cursor brings its own tilt
+    assert a.load_style({}, "demo")["tilt"] == "aim"
+    with pytest.raises(SystemExit):
+        a.load_style({}, "fancy")
+
 @pytest.mark.parametrize("cursor", a.CURSORS)
 def test_every_cursor_draws_its_tip_on_the_point_with_a_label(cursor):
     from PIL import Image
