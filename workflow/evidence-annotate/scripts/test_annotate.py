@@ -255,6 +255,8 @@ def test_press_scale_shrinks_before_the_press_and_recovers_after_the_release():
     assert a.press_k(g, t0) == pytest.approx(a.PRESS_K)
     assert a.press_k(g, t1 + a.RELEASE_S * 0.6) > 1  # springs a little past full size
     assert a.press_k(g, t1 + a.RELEASE_S + 0.01) == 1
+    quick = a.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:01.1", "tap", 1, 1)])
+    assert min(a.press_k(quick, quick[0]["t0"] + k / 300) for k in range(300)) >= a.PRESS_K - 1e-9  # a rebound and a press never stack
 
 
 def test_ring_shows_only_after_the_press():
@@ -300,6 +302,14 @@ def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
     assert tr.aim(t("10:00:06.0")) == pytest.approx(mirror, abs=0.01) and peak > mirror * 1.1  # overshoots, settles
     assert tr.aim(t("10:00:09.5")) == pytest.approx(0, abs=0.01)  # the next target lies left: back
     assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
+
+
+
+def test_aim_reversing_mid_swing_starts_from_where_the_arrow_is():
+    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:01.4", "tap", 900, 300), ev("10:00:01.8", "tap", 300, 300)])
+    tr = track(gs, tilt="aim")
+    ts = [a.hms("10:00:01.0") + k / 240 for k in range(600)]
+    assert max(abs(tr.aim(u) - tr.aim(v)) for u, v in zip(ts, ts[1:])) < 0.05  # no jump between frames
 
 
 def test_lean_grows_with_speed():
