@@ -242,7 +242,7 @@ def test_frame_black(hwnd, crop_top):
                             "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, timeout=10)
     except subprocess.TimeoutExpired as e:
         # The lavfi input waits for a second frame before ffmpeg exits, and a static window sends none:
-        # the first frame is already on stdout, so only an empty stdout means no frame.
+        # the first frame is already on stdout, so only a stdout shorter than a frame means no frame.
         out = e.stdout or b""
         if len(out) < n:
             sys.exit("no frame from the capture within 10 s: the window is not drawing, or the capture cannot see it")
