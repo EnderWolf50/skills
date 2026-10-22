@@ -234,9 +234,12 @@ def is_black(gray_frame, floor=6.0):
     return sum(gray_frame) / len(gray_frame) < floor
 
 
+PROBE_BYTES = 320 * 180  # one gray frame at the probe's scale=320:180
+
+
 def test_frame_black(hwnd, crop_top):
     """Grab the first 320x180 gray frame (10 s limit). Exits when none arrives; True when it is black."""
-    n = 320 * 180
+    n = PROBE_BYTES
     try:
         r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", capture_chain(hwnd, crop_top) + ",scale=320:180,format=gray",
                             "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, timeout=10)

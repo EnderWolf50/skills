@@ -80,10 +80,10 @@ def test_is_black_uses_mean_brightness():
     assert not screenrec.is_black(bytes([0] * 90 + [255] * 10))  # mean 25.5
 
 
-def test_frame_probe_keeps_the_frame_ffmpeg_wrote_before_a_static_window_timed_it_out(monkeypatch):
+def test_frame_probe_keeps_a_frame_written_before_the_timeout(monkeypatch):
     # gfxcapture of a window that stops repainting sends one frame; ffmpeg then waits for a second and never exits
     def run(cmd, **kw):
-        raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=bytes([200]) * (320 * 180))
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=bytes([200]) * screenrec.PROBE_BYTES)
     monkeypatch.setattr(screenrec.subprocess, "run", run)
     assert screenrec.test_frame_black(4242, 0) is False
 
