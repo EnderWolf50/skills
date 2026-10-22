@@ -19,7 +19,7 @@ The dotfiles repo is the single source of truth for every machine: Windows (Powe
    - A tool only one OS uses says so: `os = "windows"`, or a `note` naming why Linux has none.
    Done: each new or changed entry installs on both OSes, or names the OS that skips it.
 4. **Check**: `python3 .github/check.py` from the worktree root (lefthook runs it on commit; CI runs it on Linux). Done: it exits 0.
-5. **Ship** with the `ship` skill. The user lands it, or asks you to with `/ship land`.
+5. **Open a pull request**: commit, push, `gh pr create`. The user merges it.
 
 ## Sync after landing
 
