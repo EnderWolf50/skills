@@ -80,6 +80,22 @@ def test_is_black_uses_mean_brightness():
     assert not screenrec.is_black(bytes([0] * 90 + [255] * 10))  # mean 25.5
 
 
+def test_frame_probe_keeps_a_frame_written_before_the_timeout(monkeypatch):
+    # gfxcapture of a window that stops repainting sends one frame; ffmpeg then waits for a second and never exits
+    def run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=bytes([200]) * screenrec.PROBE_BYTES)
+    monkeypatch.setattr(screenrec.subprocess, "run", run)
+    assert screenrec.test_frame_black(4242, 0) is False
+
+
+def test_frame_probe_without_any_frame_exits(monkeypatch):
+    def run(cmd, **kw):
+        raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=b"")
+    monkeypatch.setattr(screenrec.subprocess, "run", run)
+    with pytest.raises(SystemExit, match="no frame"):
+        screenrec.test_frame_black(4242, 0)
+
+
 def test_prune_deletes_only_our_oldest_mp4(tmp_path):
     mine = [tmp_path / f"rec_p_20260101_00000{i}.mp4" for i in range(3)]
     other = tmp_path / "rec_notes.mp4"  # starts with rec_ but is not one of ours
