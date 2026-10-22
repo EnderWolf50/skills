@@ -240,11 +240,17 @@ def test_frame_black(hwnd, crop_top):
     try:
         r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", capture_chain(hwnd, crop_top) + ",scale=320:180,format=gray",
                             "-frames:v", "1", "-f", "rawvideo", "-"], capture_output=True, timeout=10)
-    except subprocess.TimeoutExpired:
-        sys.exit("no frame from the capture within 10 s: the window is not drawing, or the capture cannot see it")
-    if len(r.stdout) < n:
-        sys.exit(f"no frame from the capture (ffmpeg rc {r.returncode}): {r.stderr.decode(errors='replace').strip()[-300:]}")
-    return is_black(r.stdout)
+    except subprocess.TimeoutExpired as e:
+        # The lavfi input waits for a second frame before ffmpeg exits, and a static window sends none:
+        # the first frame is already on stdout, so only an empty stdout means no frame.
+        out = e.stdout or b""
+        if len(out) < n:
+            sys.exit("no frame from the capture within 10 s: the window is not drawing, or the capture cannot see it")
+    else:
+        out = r.stdout
+        if len(out) < n:
+            sys.exit(f"no frame from the capture (ffmpeg rc {r.returncode}): {r.stderr.decode(errors='replace').strip()[-300:]}")
+    return is_black(out[:n])
 
 
 # ---------------------------------------------------------------- commands
