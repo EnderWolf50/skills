@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -284,6 +285,65 @@ def test_stop_asks_a_live_runner_to_finish_instead_of_killing(env):
     env.mp.setattr(screenrec.subprocess, "run", fake_run)
     screenrec.stop(argparse.Namespace(profile="p"))
     assert env.killed == [] and (d / "rec_p_20260101_100000.mp4").exists()
+
+
+def test_progress_reads_the_last_block_and_is_zero_before_the_first_frame(tmp_path):
+    sp = screenrec.state_file(tmp_path, "p")
+    assert screenrec.progress(sp) == (0, 0.0)  # ffmpeg writes no block until it encodes a frame
+    sp.with_suffix(".progress").write_text("frame=57\nout_time_us=1900000\nprogress=continue\n"
+                                           "frame=86\nout_time_us=2866667\nprogress=continue\n", encoding="utf-8")
+    assert screenrec.progress(sp) == (86, 2.866667)
+    sp.with_suffix(".progress").write_text("frame=0\nout_time_us=N/A\n", encoding="utf-8")
+    assert screenrec.progress(sp) == (0, 0.0)
+
+
+def test_start_warns_when_no_frame_is_encoded(env, capsys):
+    d = env.tmp / "a"
+    cmds = []
+
+    def popen(cmd, **kw):  # the runner: ffmpeg comes up, but the window never repaints, so no progress block
+        sp = Path(cmd[-1])
+        cmds.append(screenrec.load(sp)["cmd"])
+        env.procs[901] = "ffmpeg.exe"
+        screenrec.update(sp, ffmpeg_pid=901)
+        return SimpleNamespace(pid=900, poll=lambda: None)
+
+    stub_start(env, popen)
+    screenrec.start(start_args(d))
+    out = capsys.readouterr().out
+    assert "recording since" in out and "warning: no frame encoded" in out and "not redrawing" in out
+    assert cmds[0][cmds[0].index("-progress") + 1].endswith("rec_p.state.progress")
+
+
+def test_status_warns_when_the_video_falls_behind_the_wall_clock(env, capsys):
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    started = (datetime.now() - timedelta(seconds=60)).isoformat(timespec="milliseconds")
+    write_state(sp, started=started, runner_pid=800, ffmpeg_pid=801)
+    env.procs.update({800: "python.exe", 801: "ffmpeg.exe"})
+    screenrec.pointer("p").write_text(str(d))
+    screenrec.status(argparse.Namespace(profile="p"))
+    assert "frames 0" in (out := capsys.readouterr().out) and "warning: no frame yet after 60 s" in out
+    sp.with_suffix(".progress").write_text("frame=300\nout_time_us=10000000\n", encoding="utf-8")
+    screenrec.status(argparse.Namespace(profile="p"))
+    assert "frames 300" in (out := capsys.readouterr().out) and "warning: no new frame for 50 s" in out
+    sp.with_suffix(".progress").write_text("frame=1770\nout_time_us=59000000\n", encoding="utf-8")
+    screenrec.status(argparse.Namespace(profile="p"))
+    assert "warning" not in capsys.readouterr().out  # a few seconds of encoder lag is normal
+
+
+def test_stop_without_a_written_file_says_why_and_leaves_nothing(env):
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    write_state(sp, runner_pid=800, ffmpeg_pid=801, ended=True)  # the runner killed an ffmpeg stuck on a silent capture
+    for suffix in (".stop", ".progress"):
+        sp.with_suffix(suffix).write_text("")
+    screenrec.pointer("p").write_text(str(d))
+    with pytest.raises(SystemExit, match="no recording written .*no frame was encoded.*not redrawing"):
+        screenrec.stop(argparse.Namespace(profile="p"))
+    assert sorted(p.name for p in d.iterdir()) == [] and not screenrec.pointer("p").exists()
 
 
 def test_two_profiles_in_one_out_name_their_recordings_apart(env):
