@@ -30,6 +30,10 @@ from pathlib import Path
 FPS = 30
 PREFIX = "rec_"  # every file this script writes in --out starts with this
 FFMPEG_IMAGE = "ffmpeg.exe"
+FIRST_FRAME_S = 5  # `start` waits this long for the first encoded frame before it warns
+STALL_S = 10  # `status` warns when the video lags the wall clock by more (ffmpeg's own lag is a few seconds)
+NOT_DRAWING = ("the window is not redrawing (a static window, a display that is off or asleep, or an app that "
+               "stopped drawing): gfxcapture sends a frame only on a repaint")
 
 
 # ---------------------------------------------------------------- window lookup
@@ -147,6 +151,19 @@ def pointer(profile):
 
 def state_file(out, profile):
     return Path(out) / f"{PREFIX}{profile}.state.json"
+
+
+def progress(sp):
+    """(frames, video seconds) from the last block of ffmpeg's -progress file next to state file sp; (0, 0.0) before
+    the first frame. ffmpeg writes no block until a frame is encoded, then one every stats period even while the
+    capture stalls, with frame= and out_time_us= frozen."""
+    try:
+        lines = sp.with_suffix(".progress").read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return 0, 0.0
+    kv = dict(line.partition("=")[::2] for line in lines)  # the last block wins
+    us = kv.get("out_time_us", "")
+    return int(kv.get("frame") or 0), int(us) / 1e6 if us.isdigit() else 0.0
 
 
 def pointed_state(profile):
@@ -280,7 +297,8 @@ def start(a):
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
            # start_time=0 repeats the first frame back to `started`, so video time = wall time - started
            f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},{size_filter(win, a.crop_top, ow, oh)},fps={FPS}:start_time=0,format=yuv420p",
-           *encoder_args(a.encoder), str(mkv)]
+           *encoder_args(a.encoder), "-progress", str(sp.with_suffix(".progress")), "-stats_period", "2", str(mkv)]
+    sp.with_suffix(".progress").unlink(missing_ok=True)  # an earlier recording's counts must not pass for this one's
     save(sp, {"cmd": cmd, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
               "window": win["title"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
     pointer(a.profile).write_text(str(out), encoding="utf-8")
@@ -303,6 +321,13 @@ def start(a):
         sys.exit(f"ffmpeg exited at once; see {log.name}")
     print(f"window {win['title']!r} {win['w']}x{win['h']} -> {ow}x{oh}")
     print(f"recording since {started:%H:%M:%S.%f}"[:-3] + f" -> {mkv}")
+    for _ in range(FIRST_FRAME_S * 10):
+        if progress(sp)[0]:
+            return
+        time.sleep(0.1)
+    # Not a refusal: a static window is still recordable once it repaints.
+    print(f"warning: no frame encoded within {FIRST_FRAME_S} s; {NOT_DRAWING}. The recording stays empty until it "
+          "does; `status` says when frames arrive")
 
 
 def run(a):
@@ -352,9 +377,12 @@ def stop(a):
         st = load(sp)
     mkv = Path(st["mkv"])
     if not mkv.exists() or mkv.stat().st_size == 0:
-        sp.unlink(missing_ok=True)
-        pointer(a.profile).unlink(missing_ok=True)
-        sys.exit(f"no recording written ({mkv}); the stale state was removed")
+        frames = progress(sp)[0]
+        why = (f"no frame was encoded; {NOT_DRAWING}" if not frames else
+               f"the capture stalled after {frames} frames, and the killed ffmpeg wrote none of them; {NOT_DRAWING}")
+        for p in (sp, sp.with_suffix(".stop"), sp.with_suffix(".progress"), pointer(a.profile)):
+            p.unlink(missing_ok=True)
+        sys.exit(f"no recording written ({mkv}): {why}. The stale state was removed")
     mp4 = mkv.with_suffix(".mp4")
     tag = ["-tag:v", "hvc1"] if "hevc_nvenc" in st["cmd"] else []  # MKV keeps no tag; Apple players want hvc1
     r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(mkv), "-c", "copy", *tag, "-movflags", "+faststart", str(mp4)])
@@ -363,6 +391,7 @@ def stop(a):
     mkv.unlink()
     sp.unlink()
     sp.with_suffix(".stop").unlink(missing_ok=True)
+    sp.with_suffix(".progress").unlink(missing_ok=True)
     pointer(a.profile).unlink(missing_ok=True)
     print("saved", mp4)
     print("started", st["started"])
@@ -375,7 +404,12 @@ def status(a):
     on = not st.get("ended") and ffmpeg_alive(st)
     size = mkv.stat().st_size if mkv.exists() else 0
     secs = (datetime.now() - datetime.fromisoformat(st["started"])).total_seconds()
-    print("active", on, "started", st["started"], f"elapsed {secs:.0f}s" if on else "", f"{size / 2**20:.1f} MB", mkv)
+    frames, video = progress(sp)
+    print("active", on, "started", st["started"], f"elapsed {secs:.0f}s" if on else "", f"{size / 2**20:.1f} MB", mkv,
+          f"frames {frames}")
+    if on and secs - video > STALL_S:  # video time runs with the wall clock (start_time=0) while frames arrive
+        print(f"warning: no new frame for {secs - video:.0f} s; {NOT_DRAWING}" if frames else
+              f"warning: no frame yet after {secs:.0f} s; {NOT_DRAWING}")
 
 
 def main(argv=None):
