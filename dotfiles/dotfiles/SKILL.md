@@ -3,14 +3,14 @@ name: dotfiles
 description: Change the user's machines through the chezmoi dotfiles repo, then sync the machines. Use when installing or adding a CLI tool, skill, MCP server or Claude Code setting, renaming a skill, editing a file under ~/.claude or ~/.config, or asked to sync ("sync Windows and WSL") after a dotfiles pull request lands.
 ---
 
-The dotfiles repo is the single source of truth for every machine: Windows (PowerShell 7) and, where installed, WSL (zsh); `chezmoi source-path` prints its checkout on each. Its `README.md` maps every file; the "Dotfiles" and "Tools" sections of `~/.claude/CLAUDE.md` hold the editing rules. A change lands on one OS and reaches the other only through this procedure.
+The dotfiles repo is the single source of truth for every machine: Windows (PowerShell 7) and, where installed, WSL (zsh); `chezmoi source-path` prints its checkout on each. Its `README.md` maps every file and which keys each one owns; this skill holds the editing rules. A change lands on one OS and reaches the other only through this procedure.
 
 **WSL present?** On Windows, check `wsl.exe -l -q`: it exits 0 and names a distro only when WSL is installed. Otherwise the machine is Windows only: skip every WSL step below (the bridge, the WSL side of Sync).
 
 ## Change
 
 1. **Look it up.** Read the current source with `git -C "$(chezmoi source-path)" fetch` and `git show origin/main:<path>`. Read `README.md`, then search `.chezmoidata/tools.toml` for the tool's name and command, `skills.toml` for the skill, and `claude.toml` for the setting or server. Done: you know whether an entry already exists and which file owns the change.
-2. **Choose the shape.** A tool is a CLI entry in `tools.toml` plus, when an agent drives it, a skill in `skills.toml`. An MCP server goes in `[claude.mcp]` only when it must stay resident (semble keeps an index in memory); write that reason as a comment beside it. A Claude Code setting goes under the `claude.toml` table that matches how it merges (`set`, `merge`, `append`). Done: one file and one table named for each piece.
+2. **Choose the shape.** A tool is a CLI entry in `tools.toml` plus, when an agent drives it, a skill in `skills.toml`. An MCP server goes in `[claude.mcp]` only for a tool with no CLI or one that must stay resident (a browser session); write that reason as a comment beside it. A Claude Code setting goes under the `claude.toml` table that matches how it merges (`set`, `merge`, `append`). Done: one file and one table named for each piece.
 
    **Renaming or re-laying out a skill** touches three places: its entry in `.chezmoidata/skills.toml`, its folder in the EnderWolf50/skills checkout, and the installed copy under `~/.agents/skills`. Done: all three are listed with the change each needs before any is edited; the first two change through a pull request each, the third through Sync.
 3. **Edit in a worktree** of the dotfiles repo on a feature branch, starting from fresh `origin/main`. Every tool entry carries an install path for **both** OSes:
