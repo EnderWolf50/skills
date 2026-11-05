@@ -86,15 +86,19 @@ def test_frame_probe_keeps_a_frame_written_before_the_timeout(monkeypatch):
     def run(cmd, **kw):
         raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=bytes([200]) * screenrec.PROBE_BYTES)
     monkeypatch.setattr(screenrec.subprocess, "run", run)
-    assert screenrec.test_frame_black(4242, 0) is False
+    assert screenrec.probe_frame(4242, 0) == "ok"
 
 
-def test_frame_probe_without_any_frame_exits(monkeypatch):
+def test_frame_probe_without_any_frame_says_none(monkeypatch):
     def run(cmd, **kw):
         raise subprocess.TimeoutExpired(cmd, kw["timeout"], output=b"")
     monkeypatch.setattr(screenrec.subprocess, "run", run)
-    with pytest.raises(SystemExit, match="no frame"):
-        screenrec.test_frame_black(4242, 0)
+    assert screenrec.probe_frame(4242, 0) == "none"
+
+
+def test_frame_probe_names_a_black_frame(monkeypatch):
+    monkeypatch.setattr(screenrec.subprocess, "run", lambda c, **kw: SimpleNamespace(stdout=bytes(screenrec.PROBE_BYTES), returncode=0, stderr=b""))
+    assert screenrec.probe_frame(4242, 0) == "black"
 
 
 def test_prune_deletes_only_our_oldest_mp4(tmp_path):
@@ -155,11 +159,11 @@ def start_args(out, profile="p"):
     return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False, height=0)
 
 
-def stub_start(env, popen):
+def stub_start(env, popen, probe="ok"):
     m = env.mp
     m.setattr(screenrec.sys, "platform", "win32")
     m.setattr(screenrec, "find_windows", lambda s: [WIN])
-    m.setattr(screenrec, "test_frame_black", lambda h, c: False)
+    m.setattr(screenrec, "probe_frame", lambda h, c: probe)
     m.setattr(screenrec.subprocess, "Popen", popen)
 
 
@@ -313,6 +317,21 @@ def test_start_warns_when_no_frame_is_encoded(env, capsys):
     out = capsys.readouterr().out
     assert "recording since" in out and "warning: no frame encoded" in out and "not redrawing" in out
     assert cmds[0][cmds[0].index("-progress") + 1].endswith("rec_p.state.progress")
+
+
+@pytest.mark.parametrize("probe, warning", [("none", "no frame from the capture within 10 s"), ("black", "is black")])
+def test_start_records_after_a_silent_or_black_probe(env, capsys, probe, warning):
+    # a frozen game or a sleeping display draws nothing: warn, and record so the clip has it once it draws again
+    def popen(cmd, **kw):
+        sp = Path(cmd[-1])
+        env.procs[901] = "ffmpeg.exe"
+        screenrec.update(sp, ffmpeg_pid=901)
+        return SimpleNamespace(pid=900, poll=lambda: None)
+
+    stub_start(env, popen, probe)
+    screenrec.start(start_args(env.tmp / "a"))
+    out = capsys.readouterr().out
+    assert warning in out and "Recording anyway" in out and "recording since" in out
 
 
 def test_status_warns_when_the_video_falls_behind_the_wall_clock(env, capsys):

@@ -8,7 +8,7 @@ uv run screenrec.py start --window TITLE_SUBSTRING --out DIR [--profile NAME] [-
 uv run screenrec.py stop   [--profile NAME]
 uv run screenrec.py status [--profile NAME]
 
-start:  find the window, refuse a minimised one, refuse a black first frame or none within 10 s, then record into DIR.
+start:  find the window, refuse a missing or minimised one, warn on a black first frame or none within 10 s, then record into DIR.
 stop:   end ffmpeg gracefully (a detached runner sends it `q`), remux the MKV to MP4 with -c copy, print the file.
 --profile (letters, digits, _ and -) only names the state file, so two recordings can run side by side (default "default").
 Needs ffmpeg 8+ (gfxcapture) on PATH. Windows only.
@@ -254,8 +254,8 @@ def is_black(gray_frame, floor=6.0):
 PROBE_BYTES = 320 * 180  # one gray frame at the probe's scale=320:180
 
 
-def test_frame_black(hwnd, crop_top):
-    """Grab the first 320x180 gray frame (10 s limit). Exits when none arrives; True when it is black."""
+def probe_frame(hwnd, crop_top):
+    """Grab the first 320x180 gray frame (10 s limit): "ok", "black", or "none" when no frame arrives. Exits on an ffmpeg error."""
     n = PROBE_BYTES
     try:
         r = subprocess.run(["ffmpeg", "-v", "error", "-f", "lavfi", "-i", capture_chain(hwnd, crop_top) + ",scale=320:180,format=gray",
@@ -265,12 +265,12 @@ def test_frame_black(hwnd, crop_top):
         # the first frame is already on stdout, so only a stdout shorter than a frame means no frame.
         out = e.stdout or b""
         if len(out) < n:
-            sys.exit("no frame from the capture within 10 s: the window is not drawing, or the capture cannot see it")
+            return "none"
     else:
         out = r.stdout
         if len(out) < n:
             sys.exit(f"no frame from the capture (ffmpeg rc {r.returncode}): {r.stderr.decode(errors='replace').strip()[-300:]}")
-    return is_black(out[:n])
+    return "black" if is_black(out[:n]) else "ok"
 
 
 # ---------------------------------------------------------------- commands
@@ -290,8 +290,14 @@ def start(a):
     free = shutil.disk_usage(out).free / 2**30
     if free < a.min_free_gb:
         sys.exit(f"only {free:.0f} GB free in {out}")
-    if test_frame_black(win["hwnd"], a.crop_top):
-        sys.exit(f"test frame of {win['title']!r} is black: the capture does not see the window")
+    # A silent or black capture is no refusal: a frozen app or a sleeping display draws nothing, and the recording
+    # must already be running when it draws again. Only a missing or minimised window cannot be recorded at all.
+    probe = probe_frame(win["hwnd"], a.crop_top)
+    if probe == "none":
+        print(f"warning: no frame from the capture within 10 s; {NOT_DRAWING}. Recording anyway")
+    elif probe == "black":
+        print(f"warning: the test frame of {win['title']!r} is black (a black screen, or a capture that cannot see the "
+              "window). Recording anyway")
     started = datetime.now()
     mkv = out / f"{PREFIX}{a.profile}_{started:%Y%m%d_%H%M%S}.mkv"
     cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
@@ -321,6 +327,8 @@ def start(a):
         sys.exit(f"ffmpeg exited at once; see {log.name}")
     print(f"window {win['title']!r} {win['w']}x{win['h']} -> {ow}x{oh}")
     print(f"recording since {started:%H:%M:%S.%f}"[:-3] + f" -> {mkv}")
+    if probe == "none":
+        return  # already warned
     for _ in range(FIRST_FRAME_S * 10):
         if progress(sp)[0]:
             return
