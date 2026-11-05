@@ -327,8 +327,10 @@ def start(a):
         sys.exit(f"ffmpeg exited at once; see {log.name}")
     print(f"window {win['title']!r} {win['w']}x{win['h']} -> {ow}x{oh}")
     print(f"recording since {started:%H:%M:%S.%f}"[:-3] + f" -> {mkv}")
+    if probe == "none":
+        return  # already warned
     for _ in range(FIRST_FRAME_S * 10):
-        if probe == "none" or progress(sp)[0]:  # a silent probe already warned
+        if progress(sp)[0]:
             return
         time.sleep(0.1)
     # Not a refusal: a static window is still recordable once it repaints.
