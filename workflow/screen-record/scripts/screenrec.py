@@ -35,8 +35,12 @@ FFMPEG_IMAGE = "ffmpeg.exe"
 FIRST_FRAME_S = 5  # `start` waits this long for the first captured frame before it warns
 STALL_S = 10  # longer than this without a new frame is a stall: logged, and reported by `status` and `stop`
 Q_WAIT_S = 3  # the runner kills a capture that has not ended this long after `q`
+ENC_WAIT_S = 30  # the runner waits this long for the encoder to finish once the capture ended
+END_GAP_S = 2  # `stop` warns when the last frame came this long before it, stall or not
+PROGRESS_TAIL = 4096  # bytes of the -progress file progress() reads: its last blocks
 NOT_DRAWING = ("the window is not redrawing (a static window, a display that is off or asleep, or an app that "
                "stopped drawing) or the capture stopped passing its repaints: gfxcapture sends a frame only on a repaint")
+STUCK = "if the window is still changing, the capture is stuck: stop, then start a new recording"
 
 
 # ---------------------------------------------------------------- window lookup
@@ -176,12 +180,15 @@ def progress(sp):
     """Frames captured so far, from the last block of the capture's -progress file next to state file sp; 0 before
     the first frame. ffmpeg writes no block until a frame comes, then one every stats period even while the
     capture stalls, with frame= frozen. (Its out_time is no clock: with -copyts ffmpeg subtracts the pts it had at
-    its first report, which comes up to a stats period after the first frame.)"""
+    its first report, which comes up to a stats period after the first frame.) Only the last PROGRESS_TAIL bytes are
+    read: the file grows all through the recording, and the runner reads it five times a second."""
     try:
-        lines = sp.with_suffix(".progress").read_text(encoding="utf-8").splitlines()
+        with sp.with_suffix(".progress").open("rb") as f:
+            f.seek(max(0, f.seek(0, os.SEEK_END) - PROGRESS_TAIL))
+            lines = f.read().decode("utf-8", "replace").splitlines()
     except FileNotFoundError:
         return 0
-    kv = dict(line.partition("=")[::2] for line in lines)  # the last block wins
+    kv = dict(line.partition("=")[::2] for line in lines)  # the last block wins; a cut first line is never the last
     return int(kv.get("frame") or 0)
 
 
@@ -428,11 +435,11 @@ def run(a):
         time.sleep(0.2)
     end_capture(cap)
     try:
-        enc.wait(timeout=30)
+        enc.wait(timeout=ENC_WAIT_S)
     except subprocess.TimeoutExpired:  # should not happen: the encoder's input has ended
         enc.kill()
         enc.wait()
-    update(sp, ended=True, rc=enc.returncode)
+    update(sp, ended=True, rc=enc.returncode, last_frame=watch["at"].isoformat(timespec="milliseconds"))
 
 
 def stop(a):
@@ -442,13 +449,14 @@ def stop(a):
     if not st.get("ended"):
         if runner_alive(st):
             sp.with_suffix(".stop").write_text("stop")
-            for _ in range(150):
+            budget = Q_WAIT_S + ENC_WAIT_S + 5  # the runner's worst case, and its poll
+            for _ in range(budget * 5):
                 time.sleep(0.2)
                 if load(sp).get("ended"):
                     break
             else:
                 if ffmpeg_alive(load(sp)):
-                    sys.exit(f"recorder did not finish within 30 s; ffmpeg pid {st.get('ffmpeg_pid')}")
+                    sys.exit(f"recorder did not finish within {budget} s; encoder ffmpeg pid {st.get('ffmpeg_pid')}")
                 # ffmpeg is gone and only the runner bookkeeping is stale: remux what it wrote
         elif ffmpeg_alive(st):  # the runner died but Windows ffmpeg keeps recording: end the capture, so the
             if alive(st.get("capture_pid", 0), FFMPEG_IMAGE):  # encoder finishes the file at the pipe's EOF
@@ -481,8 +489,13 @@ def stop(a):
     pointer(a.profile).unlink(missing_ok=True)
     print("saved", mp4)
     print("started", st["started"])
-    for line in stall_lines(st.get("stalls", []), stopped):
+    stalls = st.get("stalls", [])
+    for line in stall_lines(stalls, stopped):
         print(line)
+    if st.get("last_frame") and not (stalls and not stalls[-1][1]):  # an open stall already said where the clip ends
+        last = datetime.fromisoformat(st["last_frame"])
+        if (gap := (stopped - last).total_seconds()) > END_GAP_S:
+            print(f"warning: the clip ends at {clock(last)}, {gap:.0f} s before the stop; {NOT_DRAWING}")
 
 
 def status(a):
@@ -503,7 +516,7 @@ def status(a):
         print(f"warning: no frame yet after {secs:.0f} s; {NOT_DRAWING}")
     elif on and stalls and not stalls[-1][1]:  # the runner opened it
         since = datetime.fromisoformat(stalls[-1][0])
-        print(f"warning: no new frame for {(now - since).total_seconds():.0f} s (since {clock(since)}); {NOT_DRAWING}")
+        print(f"warning: no new frame for {(now - since).total_seconds():.0f} s (since {clock(since)}); {NOT_DRAWING}; {STUCK}")
 
 
 def main(argv=None):

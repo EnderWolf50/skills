@@ -356,7 +356,9 @@ def test_status_warns_before_the_first_frame_and_during_an_open_stall(env, capsy
     assert "frames 300" in (out := capsys.readouterr().out) and "warning" not in out  # frames come: no stall
     screenrec.update(sp, stalls=[[ago(50), None]])  # the runner saw none for STALL_S s
     screenrec.status(argparse.Namespace(profile="p"))
-    assert "warning: no new frame for 50 s (since " in capsys.readouterr().out
+    out = capsys.readouterr().out
+    # #43: the emulator kept changing while the capture sent nothing; a second start got frames again
+    assert "warning: no new frame for 50 s (since " in out and "the capture is stuck: stop, then start" in out
 
 
 def test_stop_without_a_written_file_says_why_and_leaves_nothing(env):
@@ -407,6 +409,7 @@ def test_runner_ends_the_capture_and_lets_the_encoder_finish(tmp_path, monkeypat
     screenrec.run(argparse.Namespace(state=str(sp)))
     st = screenrec.load(sp)
     assert st["runner_pid"] == 4321 and st["ffmpeg_pid"] > 0 and st["capture_pid"] > 0 and st["ended"] and st["rc"] == 0
+    assert st["last_frame"]  # when the frame count last grew, for `stop` to say where the clip ends
     assert out.read_text() == written  # a stuck capture is killed; the encoder still ends its file cleanly
     assert time.monotonic() - t < 15
 
@@ -482,6 +485,41 @@ def test_stop_reports_the_stalls_the_runner_saw(env, capsys):
     screenrec.stop(argparse.Namespace(profile="p"))
     out = capsys.readouterr().out
     assert "saved" in out and "warning: no new frame 10:00:20.0-" in out and "the clip ends at 10:00:20.0" in out
+
+
+@pytest.mark.parametrize("gap, stalls, warned", [(8, [], True), (0.5, [], False), (30, [[None, None]], False)])
+def test_stop_says_where_a_clip_ends_early_even_without_a_stall(env, capsys, gap, stalls, warned):
+    # Review of #44: frames stopped 8 s before `stop`, under STALL_S, so no stall opened and the short clip went unsaid.
+    # An open stall already says it; a clip that runs up to the stop says nothing.
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    mkv = d / "rec_p_20260101_100000.mkv"
+    mkv.write_bytes(b"x")
+    last = datetime.now() - timedelta(seconds=gap)
+    stalls = [[last.isoformat(timespec="milliseconds"), None] for _ in stalls]
+    write_state(sp, mkv=str(mkv), runner_pid=800, ffmpeg_pid=801, ended=True, stalls=stalls,
+                last_frame=last.isoformat(timespec="milliseconds"))
+    screenrec.pointer("p").write_text(str(d))
+
+    def fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"m")
+        return SimpleNamespace(returncode=0)
+
+    env.mp.setattr(screenrec.subprocess, "run", fake_run)
+    screenrec.stop(argparse.Namespace(profile="p"))
+    out = capsys.readouterr().out
+    assert ("before the stop" in out) == warned and (f"the clip ends at {screenrec.clock(last)}" in out) == (warned or bool(stalls))
+
+
+def test_progress_reads_only_the_tail_of_a_long_file(tmp_path):
+    # Review of #44: the runner reads the file five times a second and it grows by a block every half second, so a
+    # whole read cost most of a core after hours. The head here is not UTF-8: a whole read fails on it, a tail read
+    # never sees it; the tail starts mid-line and still ends with the last block.
+    sp = screenrec.state_file(tmp_path, "p")
+    blocks = "".join(f"frame={n}\nout_time_us={n * 33333}\nprogress=continue\n" for n in range(1, 20001))
+    sp.with_suffix(".progress").write_bytes(b"\xff\xfe" * 8 + blocks.encode())
+    assert screenrec.progress(sp) == 20000
 
 
 def test_status_lists_earlier_stalls(env, capsys):
