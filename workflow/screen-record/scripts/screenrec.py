@@ -9,7 +9,9 @@ uv run screenrec.py stop   [--profile NAME]
 uv run screenrec.py status [--profile NAME]
 
 start:  find the window, refuse a missing or minimised one, warn on a black first frame or none within 10 s, then record into DIR.
-stop:   end ffmpeg gracefully (a detached runner sends it `q`), remux the MKV to MP4 with -c copy, print the file.
+        One ffmpeg captures and pipes raw frames to a second that encodes, so ending a stuck capture still ends the file.
+stop:   end the capture (a detached runner sends it `q`, then kills it), let the encoder finish, remux the MKV to MP4
+        with -c copy, print the file and every stretch of over STALL_S s without a new frame.
 --profile (letters, digits, _ and -) only names the state file, so two recordings can run side by side (default "default").
 Needs ffmpeg 8+ (gfxcapture) on PATH. Windows only.
 """
@@ -30,10 +32,11 @@ from pathlib import Path
 FPS = 30
 PREFIX = "rec_"  # every file this script writes in --out starts with this
 FFMPEG_IMAGE = "ffmpeg.exe"
-FIRST_FRAME_S = 5  # `start` waits this long for the first encoded frame before it warns
-STALL_S = 10  # `status` warns when the video lags the wall clock by more (ffmpeg's own lag is a few seconds)
+FIRST_FRAME_S = 5  # `start` waits this long for the first captured frame before it warns
+STALL_S = 10  # longer than this without a new frame is a stall: logged, and reported by `status` and `stop`
+Q_WAIT_S = 3  # the runner kills a capture that has not ended this long after `q`
 NOT_DRAWING = ("the window is not redrawing (a static window, a display that is off or asleep, or an app that "
-               "stopped drawing): gfxcapture sends a frame only on a repaint")
+               "stopped drawing) or the capture stopped passing its repaints: gfxcapture sends a frame only on a repaint")
 
 
 # ---------------------------------------------------------------- window lookup
@@ -124,6 +127,22 @@ def encoder_args(choice="auto"):
     return ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "18", "-x264-params", "me=umh:merange=64"]
 
 
+def pipeline(chain, mkv, progress_path, enc):
+    """(capture, encode) commands: the first runs the lavfi `chain` and writes raw frames as NUT to stdout, the
+    second reads them from stdin and encodes to `mkv`.
+
+    ffmpeg 9 blocked on a gfxcapture that sends no frame ignores `q`, and a killed encoder leaves an MKV without its
+    end. Split, only the capture blocks: killing it closes the pipe, and the encoder finishes the file at EOF,
+    with the frame fps still held. -copyts on both keeps the wall-clock offset the capture stamped on the first
+    frame (ffmpeg would shift it to 0), and start_time=0 repeats that frame back to the start. The capture writes
+    the progress, so its frame count grows as frames arrive; the encoder holds seconds of them until more come."""
+    capture = ["ffmpeg", "-v", "error", "-y", "-copyts", "-f", "lavfi", "-i", chain, "-c:v", "rawvideo",
+               "-progress", str(progress_path), "-stats_period", "0.5", "-f", "nut", "pipe:1"]
+    encode = ["ffmpeg", "-v", "error", "-y", "-nostdin", "-copyts", "-f", "nut", "-i", "pipe:0",
+              "-vf", f"fps={FPS}:start_time=0", *enc, str(mkv)]
+    return capture, encode
+
+
 def prune(out_dir, keep_gb):
     """Delete the oldest recordings this script wrote (rec_<profile>_<date>_<time>.mp4) until they fit in keep_gb."""
     own = re.compile(rf"{PREFIX}(?:[\w-]+_)?\d{{8}}_\d{{6}}\.mp4")  # also rec_<date>_<time>.mp4 from before profiles
@@ -154,16 +173,48 @@ def state_file(out, profile):
 
 
 def progress(sp):
-    """(frames, video seconds) from the last block of ffmpeg's -progress file next to state file sp; (0, 0.0) before
-    the first frame. ffmpeg writes no block until a frame is encoded, then one every stats period even while the
-    capture stalls, with frame= and out_time_us= frozen."""
+    """Frames captured so far, from the last block of the capture's -progress file next to state file sp; 0 before
+    the first frame. ffmpeg writes no block until a frame comes, then one every stats period even while the
+    capture stalls, with frame= frozen. (Its out_time is no clock: with -copyts ffmpeg subtracts the pts it had at
+    its first report, which comes up to a stats period after the first frame.)"""
     try:
         lines = sp.with_suffix(".progress").read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
-        return 0, 0.0
+        return 0
     kv = dict(line.partition("=")[::2] for line in lines)  # the last block wins
-    us = kv.get("out_time_us", "")
-    return int(kv.get("frame") or 0), int(us) / 1e6 if us.isdigit() else 0.0
+    return int(kv.get("frame") or 0)
+
+
+def clock(t):
+    return f"{t:%H:%M:%S.%f}"[:-5]  # tenths
+
+
+def track_stall(watch, frames, now):
+    """Stall bookkeeping in `watch` ({"frames", "at", "stalls"}): `at` is when the capture's frame count last grew
+    (the start, before any frame), `stalls` is [[from, to or None], ...] in ISO times. A stall opens after STALL_S s
+    without a new frame and closes on the next one; both times are as the runner saw them, within about a second.
+    Returns a line for the log when a stall opens or closes, else None."""
+    stalls = watch["stalls"]
+    if frames != watch["frames"]:
+        watch["frames"], watch["at"] = frames, now
+        if stalls and not stalls[-1][1]:
+            stalls[-1][1] = now.isoformat(timespec="milliseconds")
+            return f"{clock(now)} frames again"
+        return None
+    if (not stalls or stalls[-1][1]) and (now - watch["at"]).total_seconds() > STALL_S:
+        stalls.append([watch["at"].isoformat(timespec="milliseconds"), None])
+        return f"{clock(now)} no new frame since {clock(watch['at'])}"
+    return None
+
+
+def stall_lines(stalls, stopped):
+    """One warning per stall; one still open at `stopped` ran to the end, so the clip ends where it began."""
+    lines = []
+    for a, b in stalls:
+        a, end = datetime.fromisoformat(a), datetime.fromisoformat(b) if b else stopped
+        tail = "" if b else f", until the stop: the clip ends at {clock(a)}"
+        lines.append(f"warning: no new frame {clock(a)}-{clock(end)} ({(end - a).total_seconds():.0f} s){tail}; {NOT_DRAWING}")
+    return lines
 
 
 def pointed_state(profile):
@@ -300,16 +351,17 @@ def start(a):
               "window). Recording anyway")
     started = datetime.now()
     mkv = out / f"{PREFIX}{a.profile}_{started:%Y%m%d_%H%M%S}.mkv"
-    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
-           # start_time=0 repeats the first frame back to `started`, so video time = wall time - started
-           f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},{size_filter(win, a.crop_top, ow, oh)},fps={FPS}:start_time=0,format=yuv420p",
-           *encoder_args(a.encoder), "-progress", str(sp.with_suffix(".progress")), "-stats_period", "2", str(mkv)]
+    # The encoder's fps start_time=0 repeats the first frame back to `started`, so video time = wall time - started
+    chain = f"{capture_chain(win['hwnd'], a.crop_top, round(started.timestamp() * 1e6), a.cursor)},{size_filter(win, a.crop_top, ow, oh)},format=yuv420p"
+    capture, encode = pipeline(chain, mkv, sp.with_suffix(".progress"), encoder_args(a.encoder))
     sp.with_suffix(".progress").unlink(missing_ok=True)  # an earlier recording's counts must not pass for this one's
-    save(sp, {"cmd": cmd, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
+    save(sp, {"capture": capture, "encode": encode, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
               "window": win["title"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
     pointer(a.profile).write_text(str(out), encoding="utf-8")
     flags = 0x08000000  # CREATE_NO_WINDOW: a hidden console, which ffmpeg needs to read `q` from stdin
-    log = open(out / f"{PREFIX}{a.profile}.log", "w", encoding="utf-8")
+    log = open(out / f"{PREFIX}{a.profile}.log", "a", encoding="utf-8")  # one log per profile, every recording in it
+    log.write(f"{started:%Y-%m-%d %H:%M:%S} start {mkv.name}\n")
+    log.flush()
     proc = subprocess.Popen([sys.executable, __file__, "_run", str(sp)], creationflags=flags, stdout=log, stderr=log,
                             stdin=subprocess.DEVNULL, close_fds=True)
     update(sp, runner_pid=proc.pid)  # the runner waits for this before it starts ffmpeg
@@ -330,7 +382,7 @@ def start(a):
     if probe == "none":
         return  # already warned
     for _ in range(FIRST_FRAME_S * 10):
-        if progress(sp)[0]:
+        if progress(sp):
             return
         time.sleep(0.1)
     # Not a refusal: a static window is still recordable once it repaints.
@@ -338,8 +390,22 @@ def start(a):
           "does; `status` says when frames arrive")
 
 
+def end_capture(cap):
+    """`q` to the capture; kill it when it does not end within Q_WAIT_S (it blocks while the window sends nothing)."""
+    if cap.poll() is not None:
+        return
+    try:
+        cap.stdin.write(b"q\n")
+        cap.stdin.flush()
+        cap.wait(timeout=Q_WAIT_S)
+    except (OSError, subprocess.TimeoutExpired):
+        cap.kill()
+        cap.wait()
+
+
 def run(a):
-    """Detached runner: owns ffmpeg and its stdin, sends `q` when the stop file appears."""
+    """Detached runner: owns both ffmpegs and the capture's stdin; logs stalls; ends the capture when the stop file
+    appears and waits for the encoder to finish the file."""
     sp = Path(a.state)
     stop_file = sp.with_suffix(".stop")
     stop_file.unlink(missing_ok=True)
@@ -349,23 +415,28 @@ def run(a):
         time.sleep(0.05)
     else:
         sys.exit("start never recorded the runner pid; not recording")
-    p = subprocess.Popen(load(sp)["cmd"], stdin=subprocess.PIPE)
-    update(sp, ffmpeg_pid=p.pid)
-    while p.poll() is None:
-        if stop_file.exists():
-            p.stdin.write(b"q\n")
-            p.stdin.flush()
-            try:
-                p.wait(timeout=10)
-            except subprocess.TimeoutExpired:  # `q` not honoured: the MKV is still remuxable
-                p.kill()
-                p.wait()
-            break
+    st = load(sp)
+    cap = subprocess.Popen(st["capture"], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    enc = subprocess.Popen(st["encode"], stdin=cap.stdout)
+    cap.stdout.close()  # the encoder holds the only read end, so it sees EOF once the capture ends
+    update(sp, ffmpeg_pid=enc.pid, capture_pid=cap.pid)
+    watch = {"frames": 0, "at": datetime.fromisoformat(st["started"]), "stalls": []}
+    while enc.poll() is None and not stop_file.exists():
+        if line := track_stall(watch, progress(sp), datetime.now()):
+            print(line, flush=True)
+            update(sp, stalls=watch["stalls"])
         time.sleep(0.2)
-    update(sp, ended=True, rc=p.returncode)
+    end_capture(cap)
+    try:
+        enc.wait(timeout=30)
+    except subprocess.TimeoutExpired:  # should not happen: the encoder's input has ended
+        enc.kill()
+        enc.wait()
+    update(sp, ended=True, rc=enc.returncode)
 
 
 def stop(a):
+    stopped = datetime.now()  # a stall still open ends here, not after the capture's `q` timed out
     sp = state_path(a.profile)
     st = load(sp)
     if not st.get("ended"):
@@ -379,20 +450,27 @@ def stop(a):
                 if ffmpeg_alive(load(sp)):
                     sys.exit(f"recorder did not finish within 30 s; ffmpeg pid {st.get('ffmpeg_pid')}")
                 # ffmpeg is gone and only the runner bookkeeping is stale: remux what it wrote
-        elif ffmpeg_alive(st):  # the runner died but Windows ffmpeg keeps recording: end it hard, the MKV survives
-            kill_tree(st["ffmpeg_pid"])
-            time.sleep(0.5)
+        elif ffmpeg_alive(st):  # the runner died but Windows ffmpeg keeps recording: end the capture, so the
+            if alive(st.get("capture_pid", 0), FFMPEG_IMAGE):  # encoder finishes the file at the pipe's EOF
+                kill_tree(st["capture_pid"])
+            for _ in range(50):
+                if not ffmpeg_alive(st):
+                    break
+                time.sleep(0.2)
+            else:
+                kill_tree(st["ffmpeg_pid"])  # the MKV stays remuxable without its end
         st = load(sp)
     mkv = Path(st["mkv"])
     if not mkv.exists() or mkv.stat().st_size == 0:
-        frames = progress(sp)[0]
+        frames = progress(sp)
         why = (f"no frame was encoded; {NOT_DRAWING}" if not frames else
-               f"the capture stalled after {frames} frames, and the killed ffmpeg wrote none of them; {NOT_DRAWING}")
+               f"ffmpeg ended before it wrote any of its {frames} frames")
         for p in (sp, sp.with_suffix(".stop"), sp.with_suffix(".progress"), pointer(a.profile)):
             p.unlink(missing_ok=True)
         sys.exit(f"no recording written ({mkv}): {why}. The stale state was removed")
     mp4 = mkv.with_suffix(".mp4")
-    tag = ["-tag:v", "hvc1"] if "hevc_nvenc" in st["cmd"] else []  # MKV keeps no tag; Apple players want hvc1
+    enc = st.get("encode") or st.get("cmd", [])  # "cmd": a recording started before the capture was split off
+    tag = ["-tag:v", "hvc1"] if "hevc_nvenc" in enc else []  # MKV keeps no tag; Apple players want hvc1
     r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(mkv), "-c", "copy", *tag, "-movflags", "+faststart", str(mp4)])
     if r.returncode:
         sys.exit(f"remux failed (rc {r.returncode}); the recording is intact at {mkv}")
@@ -403,6 +481,8 @@ def stop(a):
     pointer(a.profile).unlink(missing_ok=True)
     print("saved", mp4)
     print("started", st["started"])
+    for line in stall_lines(st.get("stalls", []), stopped):
+        print(line)
 
 
 def status(a):
@@ -411,13 +491,19 @@ def status(a):
     mkv = Path(st["mkv"])
     on = not st.get("ended") and ffmpeg_alive(st)
     size = mkv.stat().st_size if mkv.exists() else 0
-    secs = (datetime.now() - datetime.fromisoformat(st["started"])).total_seconds()
-    frames, video = progress(sp)
+    now = datetime.now()
+    secs = (now - datetime.fromisoformat(st["started"])).total_seconds()
+    frames = progress(sp)
     print("active", on, "started", st["started"], f"elapsed {secs:.0f}s" if on else "", f"{size / 2**20:.1f} MB", mkv,
           f"frames {frames}")
-    if on and secs - video > STALL_S:  # video time runs with the wall clock (start_time=0) while frames arrive
-        print(f"warning: no new frame for {secs - video:.0f} s; {NOT_DRAWING}" if frames else
-              f"warning: no frame yet after {secs:.0f} s; {NOT_DRAWING}")
+    stalls = st.get("stalls", [])
+    for line in stall_lines([s for s in stalls if s[1]], now):  # the open one follows
+        print(line)
+    if on and not frames and secs > STALL_S:
+        print(f"warning: no frame yet after {secs:.0f} s; {NOT_DRAWING}")
+    elif on and stalls and not stalls[-1][1]:  # the runner opened it
+        since = datetime.fromisoformat(stalls[-1][0])
+        print(f"warning: no new frame for {(now - since).total_seconds():.0f} s (since {clock(since)}); {NOT_DRAWING}")
 
 
 def main(argv=None):
