@@ -41,6 +41,15 @@ PROGRESS_TAIL = 4096  # bytes of the -progress file progress() reads: its last b
 NOT_DRAWING = ("the window is not redrawing (a static window, a display that is off or asleep, or an app that "
                "stopped drawing) or the capture stopped passing its repaints: gfxcapture sends a frame only on a repaint")
 STUCK = "if the window is still changing, the capture is stuck: stop, then start a new recording"
+# What silent_cause() reports. Windows sends no frame of a minimised window and resumes on restore (measured with a
+# test window: 0-2 frames in 4 s minimised, about 70 a second right after). With every monitor off the bus, no window
+# is composed: in #45 the clip of a visible window ended 0.4 s before its only monitor left the bus, and two
+# recordings started after it got no frame.
+GONE = "the window is gone (closed, or its app restarted): stop, then start on the new window"
+MINIMISED = ("the window is minimised, and Windows sends no frame of a minimised window: restore it (without "
+             "moving or resizing it) and this recording goes on")
+NO_DISPLAY = ("no display is on (every monitor is off, unplugged or on another input), and Windows composes no window "
+              "without one: turn the monitor on; a keep-awake cannot stop a monitor that is switched off")
 
 
 # ---------------------------------------------------------------- window lookup
@@ -82,6 +91,36 @@ def pick_window(wins, substr):
     if w["iconic"] or w["w"] == 0 or w["h"] == 0:
         sys.exit(f"window {w['title']!r} is minimised: restore it first")
     return w
+
+
+def active_displays():
+    """How many displays show the desktop (QueryDisplayConfig's active paths); 0 when no monitor is on, None when
+    Windows does not say."""
+    paths, modes = ctypes.c_uint32(), ctypes.c_uint32()
+    rc = ctypes.windll.user32.GetDisplayConfigBufferSizes(2, ctypes.byref(paths), ctypes.byref(modes))  # QDC_ONLY_ACTIVE_PATHS
+    return paths.value if rc == 0 else None
+
+
+def silent_cause(hwnd):
+    """Why the window `hwnd` sends no frame, when Windows can show it: GONE, MINIMISED or NO_DISPLAY. None when none
+    holds, or for no hwnd (a state written before it was kept): the window then draws nothing, or the capture stopped."""
+    if not hwnd:
+        return None
+    u = ctypes.windll.user32
+    h = wintypes.HWND(hwnd)
+    if not u.IsWindow(h):
+        return GONE
+    if u.IsIconic(h):
+        return MINIMISED
+    if active_displays() == 0:
+        return NO_DISPLAY
+    return None
+
+
+def why_silent(hwnd, stuck=False):
+    """The reason printed for a stretch without frames: the cause Windows shows, else NOT_DRAWING (and, with `stuck`,
+    the advice for a capture that stopped while the window still changes)."""
+    return silent_cause(hwnd) or (f"{NOT_DRAWING}; {STUCK}" if stuck else NOT_DRAWING)
 
 
 def capture_chain(hwnd, crop_top, t0_us=None, cursor=False):
@@ -196,11 +235,11 @@ def clock(t):
     return f"{t:%H:%M:%S.%f}"[:-5]  # tenths
 
 
-def track_stall(watch, frames, now):
+def track_stall(watch, frames, now, cause=lambda: None):
     """Stall bookkeeping in `watch` ({"frames", "at", "stalls"}): `at` is when the capture's frame count last grew
-    (the start, before any frame), `stalls` is [[from, to or None], ...] in ISO times. A stall opens after STALL_S s
-    without a new frame and closes on the next one; both times are as the runner saw them, within about a second.
-    Returns a line for the log when a stall opens or closes, else None."""
+    (the start, before any frame), `stalls` is [[from, to or None, cause or None], ...] in ISO times. A stall opens
+    after STALL_S s without a new frame, with what `cause()` says then, and closes on the next frame; both times are
+    as the runner saw them, within about a second. Returns a line for the log when a stall opens or closes, else None."""
     stalls = watch["stalls"]
     if frames != watch["frames"]:
         watch["frames"], watch["at"] = frames, now
@@ -209,18 +248,21 @@ def track_stall(watch, frames, now):
             return f"{clock(now)} frames again"
         return None
     if (not stalls or stalls[-1][1]) and (now - watch["at"]).total_seconds() > STALL_S:
-        stalls.append([watch["at"].isoformat(timespec="milliseconds"), None])
-        return f"{clock(now)} no new frame since {clock(watch['at'])}"
+        why = cause()
+        stalls.append([watch["at"].isoformat(timespec="milliseconds"), None, why])
+        return f"{clock(now)} no new frame since {clock(watch['at'])}" + (f": {why}" if why else "")
     return None
 
 
 def stall_lines(stalls, stopped):
-    """One warning per stall; one still open at `stopped` ran to the end, so the clip ends where it began."""
+    """One warning per stall, with the cause seen when it opened; one still open at `stopped` ran to the end, so the
+    clip ends where it began."""
     lines = []
-    for a, b in stalls:
+    for a, b, *why in stalls:  # a stall written before causes were kept has no third item
         a, end = datetime.fromisoformat(a), datetime.fromisoformat(b) if b else stopped
         tail = "" if b else f", until the stop: the clip ends at {clock(a)}"
-        lines.append(f"warning: no new frame {clock(a)}-{clock(end)} ({(end - a).total_seconds():.0f} s){tail}; {NOT_DRAWING}")
+        lines.append(f"warning: no new frame {clock(a)}-{clock(end)} ({(end - a).total_seconds():.0f} s){tail}; "
+                     f"{why[0] if why and why[0] else NOT_DRAWING}")
     return lines
 
 
@@ -352,7 +394,7 @@ def start(a):
     # must already be running when it draws again. Only a missing or minimised window cannot be recorded at all.
     probe = probe_frame(win["hwnd"], a.crop_top)
     if probe == "none":
-        print(f"warning: no frame from the capture within 10 s; {NOT_DRAWING}. Recording anyway")
+        print(f"warning: no frame from the capture within 10 s; {why_silent(win['hwnd'])}. Recording anyway")
     elif probe == "black":
         print(f"warning: the test frame of {win['title']!r} is black (a black screen, or a capture that cannot see the "
               "window). Recording anyway")
@@ -363,7 +405,7 @@ def start(a):
     capture, encode = pipeline(chain, mkv, sp.with_suffix(".progress"), encoder_args(a.encoder))
     sp.with_suffix(".progress").unlink(missing_ok=True)  # an earlier recording's counts must not pass for this one's
     save(sp, {"capture": capture, "encode": encode, "mkv": str(mkv), "started": started.isoformat(timespec="milliseconds"),
-              "window": win["title"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
+              "window": win["title"], "hwnd": win["hwnd"], "size": [ow, oh], "runner_image": Path(sys.executable).name})
     pointer(a.profile).write_text(str(out), encoding="utf-8")
     flags = 0x08000000  # CREATE_NO_WINDOW: a hidden console, which ffmpeg needs to read `q` from stdin
     log = open(out / f"{PREFIX}{a.profile}.log", "a", encoding="utf-8")  # one log per profile, every recording in it
@@ -393,8 +435,8 @@ def start(a):
             return
         time.sleep(0.1)
     # Not a refusal: a static window is still recordable once it repaints.
-    print(f"warning: no frame encoded within {FIRST_FRAME_S} s; {NOT_DRAWING}. The recording stays empty until it "
-          "does; `status` says when frames arrive")
+    print(f"warning: no frame encoded within {FIRST_FRAME_S} s; {why_silent(win['hwnd'])}. The recording stays empty "
+          "until a frame comes; `status` says when frames arrive")
 
 
 def end_capture(cap):
@@ -429,7 +471,7 @@ def run(a):
     update(sp, ffmpeg_pid=enc.pid, capture_pid=cap.pid)
     watch = {"frames": 0, "at": datetime.fromisoformat(st["started"]), "stalls": []}
     while enc.poll() is None and not stop_file.exists():
-        if line := track_stall(watch, progress(sp), datetime.now()):
+        if line := track_stall(watch, progress(sp), datetime.now(), lambda: silent_cause(st.get("hwnd"))):
             print(line, flush=True)
             update(sp, stalls=watch["stalls"])
         time.sleep(0.2)
@@ -471,7 +513,7 @@ def stop(a):
     mkv = Path(st["mkv"])
     if not mkv.exists() or mkv.stat().st_size == 0:
         frames = progress(sp)
-        why = (f"no frame was encoded; {NOT_DRAWING}" if not frames else
+        why = (f"no frame was encoded; {why_silent(st.get('hwnd'))}" if not frames else
                f"ffmpeg ended before it wrote any of its {frames} frames")
         for p in (sp, sp.with_suffix(".stop"), sp.with_suffix(".progress"), pointer(a.profile)):
             p.unlink(missing_ok=True)
@@ -495,7 +537,7 @@ def stop(a):
     if st.get("last_frame") and not (stalls and not stalls[-1][1]):  # an open stall already said where the clip ends
         last = datetime.fromisoformat(st["last_frame"])
         if (gap := (stopped - last).total_seconds()) > END_GAP_S:
-            print(f"warning: the clip ends at {clock(last)}, {gap:.0f} s before the stop; {NOT_DRAWING}")
+            print(f"warning: the clip ends at {clock(last)}, {gap:.0f} s before the stop; {why_silent(st.get('hwnd'))}")
 
 
 def status(a):
@@ -512,11 +554,16 @@ def status(a):
     stalls = st.get("stalls", [])
     for line in stall_lines([s for s in stalls if s[1]], now):  # the open one follows
         print(line)
-    if on and not frames and secs > STALL_S:
-        print(f"warning: no frame yet after {secs:.0f} s; {NOT_DRAWING}")
-    elif on and stalls and not stalls[-1][1]:  # the runner opened it
+    if not on:
+        return
+    hwnd = st.get("hwnd")
+    if not frames and secs > STALL_S:
+        print(f"warning: no frame yet after {secs:.0f} s; {why_silent(hwnd)}")
+    elif stalls and not stalls[-1][1]:  # the runner opened it; the cause is read now, as the stall may have changed
         since = datetime.fromisoformat(stalls[-1][0])
-        print(f"warning: no new frame for {(now - since).total_seconds():.0f} s (since {clock(since)}); {NOT_DRAWING}; {STUCK}")
+        print(f"warning: no new frame for {(now - since).total_seconds():.0f} s (since {clock(since)}); {why_silent(hwnd, stuck=True)}")
+    elif cause := silent_cause(hwnd):  # e.g. minimised a moment ago: no frame comes, though no stall opened yet
+        print(f"warning: {cause}")
 
 
 def main(argv=None):
