@@ -159,11 +159,12 @@ def start_args(out, profile="p"):
     return argparse.Namespace(window="app", out=str(out), profile=profile, crop_top=0, keep_gb=20, min_free_gb=0, encoder="x264", cursor=False, height=0)
 
 
-def stub_start(env, popen, probe="ok"):
+def stub_start(env, popen, probe="ok", cause=None):
     m = env.mp
     m.setattr(screenrec.sys, "platform", "win32")
     m.setattr(screenrec, "find_windows", lambda s: [WIN])
     m.setattr(screenrec, "probe_frame", lambda h, c: probe)
+    m.setattr(screenrec, "silent_cause", lambda h: cause)
     m.setattr(screenrec.subprocess, "Popen", popen)
 
 
@@ -354,11 +355,176 @@ def test_status_warns_before_the_first_frame_and_during_an_open_stall(env, capsy
     sp.with_suffix(".progress").write_text("frame=300\n", encoding="utf-8")
     screenrec.status(argparse.Namespace(profile="p"))
     assert "frames 300" in (out := capsys.readouterr().out) and "warning" not in out  # frames come: no stall
-    screenrec.update(sp, stalls=[[ago(50), None]])  # the runner saw none for STALL_S s
+    screenrec.update(sp, stalls=[[ago(50), None, None]])  # the runner saw none for STALL_S s
     screenrec.status(argparse.Namespace(profile="p"))
     out = capsys.readouterr().out
-    # #43: the emulator kept changing while the capture sent nothing; a second start got frames again
+    # no cause Windows can show (a state from before `hwnd` was kept has none to check): it may be a stuck capture
     assert "warning: no new frame for 50 s (since " in out and "the capture is stuck: stop, then start" in out
+
+
+def test_status_names_a_minimised_window_instead_of_a_stuck_capture(env, capsys):
+    # #45: the #451 clip ends at 04:13:28.9 because MuMu's window was minimised at 04:13:29.5 (its shell log), not
+    # because the capture stuck: frames come back once the window is restored, and a new `start` refuses it.
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    ago = lambda s: (datetime.now() - timedelta(seconds=s)).isoformat(timespec="milliseconds")
+    write_state(sp, started=ago(60), runner_pid=800, ffmpeg_pid=801, hwnd=4242, stalls=[[ago(20), None, None]])
+    env.procs.update({800: "python.exe", 801: "ffmpeg.exe"})
+    sp.with_suffix(".progress").write_text("frame=300\n", encoding="utf-8")
+    screenrec.pointer("p").write_text(str(d))
+    asked = []
+    env.mp.setattr(screenrec, "silent_cause", lambda h: (asked.append(h), "minimised")[1])
+    screenrec.status(argparse.Namespace(profile="p"))
+    out = capsys.readouterr().out
+    now, do, _ = screenrec.CAUSES["minimised"]
+    assert "warning: no new frame for 20 s (since " in out and f"; {now}: {do}" in out and "stuck" not in out
+    assert set(asked) == {4242}
+    screenrec.update(sp, stalls=[])  # minimised a moment ago: no stall yet, and none of its frames will come
+    screenrec.status(argparse.Namespace(profile="p"))
+    assert f"warning: {now}: {do}" in capsys.readouterr().out
+
+
+def test_status_of_a_recording_that_ended_with_its_window(env, capsys):
+    # A closed window ends gfxcapture within 0.1 s (measured), so the recording is no longer active when status runs.
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    write_state(sp, runner_pid=800, ffmpeg_pid=801, hwnd=4242, ended=True)
+    screenrec.pointer("p").write_text(str(d))
+    for cause, said in (("gone", True), ("minimised", False), (None, False)):  # only a closed window ends a recording
+        env.mp.setattr(screenrec, "silent_cause", lambda h, c=cause: c)
+        screenrec.status(argparse.Namespace(profile="p"))
+        out = capsys.readouterr().out
+        assert "active False" in out and ("warning: the recording ended: the window is gone" in out) == said
+
+
+def test_start_names_no_display_when_the_probe_gets_no_frame(env, capsys):
+    # #45: in #453 the only monitor left the bus at 04:22:32.3 (Kernel-PnP 1010), 0.4 s after the last frame, and two
+    # later starts got no frame. The warning says so instead of blaming a window that does not redraw.
+    def popen(cmd, **kw):
+        sp = Path(cmd[-1])
+        env.procs[901] = "ffmpeg.exe"
+        screenrec.update(sp, ffmpeg_pid=901)
+        return SimpleNamespace(pid=900, poll=lambda: None)
+
+    stub_start(env, popen, "none", cause="no display")
+    screenrec.start(start_args(env.tmp / "a"))
+    out = capsys.readouterr().out
+    now, do, _ = screenrec.CAUSES["no display"]
+    assert f"no frame from the capture within 10 s; {now}: {do}. Recording anyway" in out
+    assert screenrec.load(screenrec.state_file((env.tmp / "a").resolve(), "p"))["hwnd"] == WIN["hwnd"]  # for status
+
+
+def fake_user32(monkeypatch, window=True, iconic=False, visible=True, displays=1):
+    user32 = SimpleNamespace(IsWindow=lambda h: window, IsIconic=lambda h: iconic, IsWindowVisible=lambda h: visible)
+    monkeypatch.setattr(screenrec.ctypes, "windll", SimpleNamespace(user32=user32), raising=False)
+    monkeypatch.setattr(screenrec, "active_displays", lambda: displays)
+
+
+@pytest.mark.parametrize("state, cause", [
+    ({}, None),
+    ({"window": False}, "gone"),
+    ({"iconic": True, "visible": True}, "minimised"),  # Windows counts a minimised window as visible
+    ({"visible": False}, "hidden"),
+    ({"displays": 0}, "no display"),
+    ({"displays": None}, None),  # the display query failed: no claim
+    ({"iconic": True, "displays": 0}, "minimised"),  # the window's own state first
+])
+def test_silent_cause_reads_the_window_then_the_displays(monkeypatch, state, cause):
+    fake_user32(monkeypatch, **state)
+    assert screenrec.silent_cause(4242) == cause
+
+
+def test_a_stall_keeps_the_cause_seen_when_it_opened():
+    t0 = datetime(2026, 1, 1, 10, 0, 0)
+    watch = {"frames": 5, "at": t0, "stalls": []}
+    line = screenrec.track_stall(watch, 5, t0 + timedelta(seconds=screenrec.STALL_S + 1), cause=lambda: "minimised")
+    now, do, was = screenrec.CAUSES["minimised"]
+    assert line.endswith(f"no new frame since 10:00:00.0: {now}")
+    assert watch["stalls"] == [["2026-01-01T10:00:00.000", None, "minimised"]]
+    old = ["2026-01-01T09:00:00.000", "2026-01-01T09:00:30.000"]  # a state written before stalls kept a cause
+    lines = screenrec.stall_lines(watch["stalls"] + [old], datetime(2026, 1, 1, 10, 1, 0))
+    # stop prints these once the recording ended: what held, without "restore it and this recording goes on"
+    assert lines[0].endswith(f"; {was}") and do not in lines[0] and lines[1].endswith(screenrec.NOT_DRAWING)
+
+
+def test_runner_logs_the_cause_of_a_stall_and_of_an_end_by_itself(tmp_path, monkeypatch, capsys):
+    import threading
+    monkeypatch.setattr(screenrec, "silent_cause", lambda h: {4242: "minimised", 4343: "gone"}.get(h))
+    # A capture that sends one frame and blocks: no progress file, so no frame counts, and the stall opens at once
+    # (the state's start is long past).
+    sp = screenrec.state_file(tmp_path, "p")
+    write_state(sp, capture=[sys.executable, "-c", CAPTURE_STUCK], encode=[sys.executable, "-c", ENCODER, str(tmp_path / "a")],
+                runner_pid=4321, hwnd=4242)
+    monkeypatch.setattr(screenrec, "Q_WAIT_S", 1)
+    threading.Timer(1.5, lambda: sp.with_suffix(".stop").write_text("stop")).start()
+    screenrec.run(argparse.Namespace(state=str(sp)))
+    out = capsys.readouterr().out
+    assert f"no new frame since 10:00:00.0: {screenrec.CAUSES['minimised'][0]}" in out and "by itself" not in out
+    assert screenrec.load(sp)["stalls"][-1][2] == "minimised"
+    # A capture that ends on its own, as gfxcapture does when its window closes: the encoder ends, and so the run.
+    sp = screenrec.state_file(tmp_path, "q")
+    write_state(sp, capture=[sys.executable, "-c", "print('frame')"], encode=[sys.executable, "-c", ENCODER, str(tmp_path / "b")],
+                runner_pid=4321, hwnd=4343)
+    screenrec.run(argparse.Namespace(state=str(sp)))
+    assert f"the recording ended by itself: {screenrec.CAUSES['gone'][2]}" in capsys.readouterr().out
+
+
+def test_stop_says_what_held_once_the_recording_ended(env, capsys):
+    d = env.tmp / "a"
+    d.mkdir()
+    sp = screenrec.state_file(d, "p")
+    mkv = d / "rec_p_20260101_100000.mkv"
+    mkv.write_bytes(b"x")
+    last = datetime.now() - timedelta(seconds=8)
+    write_state(sp, mkv=str(mkv), runner_pid=800, ffmpeg_pid=801, ended=True, hwnd=4242,
+                last_frame=last.isoformat(timespec="milliseconds"))
+    screenrec.pointer("p").write_text(str(d))
+    env.mp.setattr(screenrec, "silent_cause", lambda h: "minimised" if h == 4242 else None)
+
+    def fake_run(cmd, **kw):
+        Path(cmd[-1]).write_bytes(b"m")
+        return SimpleNamespace(returncode=0)
+
+    env.mp.setattr(screenrec.subprocess, "run", fake_run)
+    screenrec.stop(argparse.Namespace(profile="p"))
+    _, do, was = screenrec.CAUSES["minimised"]
+    out = capsys.readouterr().out
+    assert f"8 s before the stop; {was}" in out and do not in out
+    # nothing written: the same cause, as it was
+    write_state(sp, runner_pid=800, ffmpeg_pid=801, ended=True, hwnd=4242)
+    screenrec.pointer("p").write_text(str(d))
+    with pytest.raises(SystemExit, match=f"no frame was encoded; {was}"):
+        screenrec.stop(argparse.Namespace(profile="p"))
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows only")
+def test_silent_cause_reads_a_real_window():
+    # A top-level window of our own, off screen and never activated: shown, hidden, minimised, destroyed.
+    import ctypes
+    from ctypes import wintypes
+    u = ctypes.windll.user32
+    u.CreateWindowExW.restype = wintypes.HWND
+    u.CreateWindowExW.argtypes = [wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD, ctypes.c_int,
+                                  ctypes.c_int, ctypes.c_int, ctypes.c_int, wintypes.HWND, wintypes.HMENU,
+                                  wintypes.HINSTANCE, wintypes.LPVOID]
+    hwnd = u.CreateWindowExW(0x08000000, "STATIC", "screenrec test", 0x00CF0000, -3000, -3000, 200, 100,
+                             None, None, None, None)  # WS_EX_NOACTIVATE, WS_OVERLAPPEDWINDOW
+    assert hwnd
+    try:
+        u.ShowWindow(wintypes.HWND(hwnd), 4)  # SW_SHOWNOACTIVATE
+        displays = screenrec.active_displays()
+        assert isinstance(displays, int)
+        assert screenrec.silent_cause(hwnd) == ("no display" if displays == 0 else None)
+        u.ShowWindow(wintypes.HWND(hwnd), 0)  # SW_HIDE
+        assert screenrec.silent_cause(hwnd) == "hidden"
+        u.ShowWindow(wintypes.HWND(hwnd), 7)  # SW_SHOWMINNOACTIVE
+        assert screenrec.silent_cause(hwnd) == "minimised"
+    finally:
+        u.DestroyWindow(wintypes.HWND(hwnd))
+    assert screenrec.silent_cause(hwnd) == "gone"
+    assert screenrec.silent_cause(None) is None  # a state from before hwnd was kept
 
 
 def test_stop_without_a_written_file_says_why_and_leaves_nothing(env):
@@ -450,10 +616,10 @@ def test_track_stall_opens_after_stall_s_without_a_new_frame_and_closes_on_the_n
     assert screenrec.track_stall(watch, 600, at(20)) is None
     assert screenrec.track_stall(watch, 600, at(20 + screenrec.STALL_S)) is None and watch["stalls"] == []
     line = screenrec.track_stall(watch, 600, at(20 + screenrec.STALL_S + 1))
-    assert "no new frame since 10:00:20.0" in line and watch["stalls"] == [["2026-01-01T10:00:20.000", None]]
+    assert line.endswith("no new frame since 10:00:20.0") and watch["stalls"] == [["2026-01-01T10:00:20.000", None, None]]
     assert screenrec.track_stall(watch, 600, at(50)) is None  # still the same stall
     line = screenrec.track_stall(watch, 601, at(59))
-    assert "frames again" in line and watch["stalls"] == [["2026-01-01T10:00:20.000", "2026-01-01T10:00:59.000"]]
+    assert "frames again" in line and watch["stalls"] == [["2026-01-01T10:00:20.000", "2026-01-01T10:00:59.000", None]]
     # none before the first frame: the stall runs from the start
     watch = {"frames": 0, "at": t0, "stalls": []}
     assert "since 10:00:00.0" in screenrec.track_stall(watch, 0, at(screenrec.STALL_S + 1))
