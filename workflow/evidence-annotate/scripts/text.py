@@ -21,7 +21,7 @@ TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins
 ANCHORS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size": 13, "weight": 500, "lines": [],
          "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "radius": None,
-         "pad": None, "margin": 10, "max_w": None, "max_lines": 1, "rect": None, "read": True,
+         "pad": None, "margin": 6, "max_w": None, "max_lines": 1, "rect": None, "read": True,
          "area": "frame"}  # a block's keys and defaults; area: anchored to the whole output frame or the recording in it
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner

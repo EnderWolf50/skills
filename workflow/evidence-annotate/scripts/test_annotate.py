@@ -549,7 +549,8 @@ def test_blocks_stack_at_their_anchor_and_sit_beside_when_asked():
     ov = Image.new("RGBA", (1280, 720))
     at = p.blocks(ov, [top1, top2, low1, low2], 0, {})
     (x1, y1, w1, h1), (_, y2, _, h2) = at[id(top1)], at[id(top2)]
-    assert x1 + w1 == pytest.approx(1270, abs=1) and y1 == pytest.approx(10, abs=1)  # 10 px off the corner
+    m = text.BLOCK["margin"]
+    assert x1 + w1 == pytest.approx(1280 - m, abs=1) and y1 == pytest.approx(m, abs=1)  # the margin off the corner
     assert y2 == pytest.approx(y1 + h1 + text.ROW_GAP, abs=1) and h2 > h1  # the next one under it, two lines tall
     (lx, ly, lw, lh), (bx, by, _, bh) = at[id(low1)], at[id(low2)]
     assert by + bh == pytest.approx(ly + lh, abs=1) and bx == pytest.approx(lx + lw + text.SIDE_GAP, abs=1)  # beside
@@ -580,9 +581,10 @@ def test_a_block_can_anchor_to_the_recording_inside_the_bands():
     frame, video = b(at="top-right"), b(at="top-right", area="video")
     corner = b(at="bottom-left", area="video")
     at = p.blocks(Image.new("RGBA", (1280, 800)), [frame, video, corner], 0, {})
-    assert at[id(frame)][1] == pytest.approx(10, abs=1)  # in the top band
-    assert at[id(video)][1] == pytest.approx(50, abs=1) and at[id(video)][0] + at[id(video)][2] == pytest.approx(1270, abs=1)
-    assert at[id(corner)][1] + at[id(corner)][3] == pytest.approx(750, abs=1)  # above the bottom band
+    m = text.BLOCK["margin"]
+    assert at[id(frame)][1] == pytest.approx(m, abs=1)  # in the top band
+    assert at[id(video)][1] == pytest.approx(40 + m, abs=1) and at[id(video)][0] + at[id(video)][2] == pytest.approx(1280 - m, abs=1)
+    assert at[id(corner)][1] + at[id(corner)][3] == pytest.approx(760 - m, abs=1)  # above the bottom band
     with pytest.raises(SystemExit):
         text.check_block({"area": "band"}, "test")
 
