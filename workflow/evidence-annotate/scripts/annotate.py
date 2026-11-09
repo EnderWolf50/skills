@@ -16,6 +16,8 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
 --steps   [{"from","to","title","note"? (not drawn: for the report),"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
 --masks   {"space":[w,h],"masks":[{"template":"a.png","threshold":0.8,"boxes":[[x,y,w,h]]}]}: a box is blacked out
           while its template matches (2 fps scan, +-1 s around each hit); template paths relative to the masks file
+--blocks  {"canvas"?:{"top","bottom","left","right","color"},"space"?:[w,h],"blocks":[{...}]}: bands round the
+          recording and the text blocks the project lays out itself (BLOCKS.md)
 --from/--to  cut a clip; --frames also saves those annotated frames as PNG next to OUT; --no-video writes only them
 --offset  calibration: seconds added to every event time before mapping to video time
 --font    a CJK-capable font file (default: first of the usual Windows / Linux ones)
@@ -36,7 +38,8 @@ from PIL import Image, ImageDraw, ImageFilter
 import cursor_motion as cm
 from common import ease, fmt, hms, load_font, rgb
 from pointer import CLICKS, COLORS, CURSOR_MOTION, CURSORS, PointerLayer, gestures, pos_at, presses, shift
-from text import CAPTIONS, TextLayer, key_at, key_items, load_steps, read_s, step_at
+from text import (CAPTIONS, CORNER, TextLayer, block_text, check_block, key_at, key_items, load_blocks, load_steps,
+                  read_s, step_at, step_label)
 
 POINTERS = ("touch", "mouse", "none")
 FONTS = [  # CJK first: Windows, then Linux
@@ -46,7 +49,7 @@ FONTS = [  # CJK first: Windows, then Linux
 ]
 ZOOM_S = 0.6  # zoom ease-in / ease-out
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "caption_size": 18, "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "caption_size": 18, "dot": False, "corner": True}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 PRESETS = {  # --preset: a whole look by use; events.json "style" keys override it, the cursor brings its own motion
     "evidence": {},  # bug reports, test proof: plain, nothing moves the frame
@@ -110,6 +113,10 @@ def load_style(doc, preset="evidence"):
         if not 1 <= len(stops) <= 2 or None in (stops := [rgb(c) for c in stops]):
             sys.exit(f"events: style.frame must be #rrggbb or [#rrggbb, #rrggbb], got {st['frame']!r}")
         st["frame"] = stops
+    if st["corner"] is True or isinstance(st["corner"], dict):  # the corner block, or its keys over the default's
+        st["corner"] = check_block({**CORNER, **(st["corner"] if isinstance(st["corner"], dict) else {})}, "events: style.corner")
+    elif st["corner"] is not False:
+        sys.exit(f"events: style.corner must be true, false or a block's keys, got {st['corner']!r}")
     return st
 
 
@@ -389,12 +396,14 @@ def encoder_args():
     return ["-c:v", "libx264", "-preset", "medium", "-crf", "24", "-x264-params", "me=umh:merange=64"]
 
 
-def idle_spans(gs, keys, steps, after):
+def idle_spans(gs, keys, steps, after, blocks=()):
     """Wall-time spans [a, b] with nothing to follow for more than `after` seconds: no glide, press, move or ring
-    (0.8 s before one to 1 s after), no key pill, no step caption still being read (read_s of its title from its
-    start, ending with the step)."""
+    (0.8 s before one to 1 s after), no key pill, no step caption or block still being read (read_s of its words
+    from its start, ending with it; a block without `from` or with `read` false never counts)."""
     busy = sorted([(g["t0"] - 0.8, g["t1"] + 1.0) for g in gs] + [(k["t0"] - 0.3, k["t1"]) for k in keys]
-                  + [(st["from"] - 0.3, min(st["to"], st["from"] + read_s(st["title"]))) for st in steps])
+                  + [(st["from"] - 0.3, min(st["to"], st["from"] + read_s(st["title"]))) for st in steps]
+                  + [(b["from"] - 0.3, min(np.inf if b["to"] is None else b["to"], b["from"] + read_s(block_text(b))))
+                     for b in blocks if b["from"] is not None and b["read"]])
     spans, end = [], -np.inf
     for a, b in busy:
         if end > -np.inf and a - end > after:
@@ -483,6 +492,8 @@ def render(args):
     for st in steps:
         st["anchor"] = step_anchor(st, gs)
     masks, mspace = load_masks(args.masks) if args.masks else ([], space)
+    canvas, blocks, bspace = load_blocks(args.blocks) if args.blocks else (None, [], None)
+    bspace = parse_space({"space": bspace}, "blocks") if bspace else space
     start = hms(args.start)
     probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
                                        "stream=width,height,r_frame_rate:format=duration", "-of", "json", args.video],
@@ -492,16 +503,23 @@ def render(args):
     num, den = map(int, st["r_frame_rate"].split("/"))
     fps = num / den
     ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
-    print(f"[annotate] {len(gs)} gestures, {len(items) - len(gs)} moves, {len(keys)} key pills, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
+    print(f"[annotate] {len(gs)} gestures, {len(items) - len(gs)} moves, {len(keys)} key pills, {len(steps)} steps, "
+          f"{len(blocks)} blocks, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font), style)
+    s = paint.s
+    ox, oy = (round(canvas["left"] * s), round(canvas["top"] * s)) if canvas else (0, 0)
+    CW, CH = (W + ox + round(canvas["right"] * s), H + oy + round(canvas["bottom"] * s)) if canvas else (W, H)
+    paint.ow, paint.oh, paint.ox, paint.oy = CW, CH, ox, oy  # text goes on the recording with its bands
+    covers = [b for b in blocks if b["rect"]]
+    corner = [style["corner"]] if style["corner"] else []
     track = paint.track(items) if pointer == "mouse" and items else None
     cam = Camera(gs, keys, space, style["zoom"]) if style["zoom"] > 1 else None
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
                             "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], stdout=subprocess.PIPE)
-    framer = Framer(W, H, style["frame"]) if style["frame"] else None
-    OW, OH = (framer.w, framer.h) if framer else (W, H)
+    framer = Framer(CW, CH, style["frame"]) if style["frame"] else None
+    OW, OH = (framer.w, framer.h) if framer else (CW, CH)
     enc = None if args.no_video else subprocess.Popen(  # the crop keeps both sides even, as 4:2:0 needs
         ["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", f"{OW}x{OH}", "-r", f"{num}/{den}",
          "-i", "-", "-vf", "crop=trunc(iw/2)*2:trunc(ih/2)*2", *encoder_args(), "-pix_fmt", "yuv420p",
@@ -509,7 +527,7 @@ def render(args):
         env={**os.environ, "SVT_LOG": "1"})  # libsvtav1 prints its banner past -v error unless told
     n, size, gi = 0, W * H * 3, 0
     out = FrameWriter(enc.stdin) if enc else None
-    fast = idle_spans(items, keys, steps, args.idle_after) if args.idle_speed > 1 else []
+    fast = idle_spans(items, keys, steps, args.idle_after, blocks) if args.idle_speed > 1 else []
     if fast:
         print(f"[annotate] {len(fast)} idle spans at {args.idle_speed}x, {sum(b - a for a, b in fast):.1f}s of wall time", flush=True)
     kept = 0
@@ -532,6 +550,9 @@ def render(args):
             paint.view = (x0, y0, W / (x1 - x0), H / (y1 - y0))
         ov = Image.new("RGBA", (W, H))
         d = ImageDraw.Draw(ov)
+        tokens = {"clock": fmt(t), "step": step_label(steps, cur), "speed": f"快轉 {args.idle_speed}×" if span else ""}
+        for blk in covers:  # under every other mark, through the zoom
+            paint.cover(ov, blk, t, tokens, bspace)
         if cur:
             for x, y, w, h, *label in cur[1].get("boxes", []):
                 paint.box(d, x, y, w, h, label[0] if label else "", cur[2])
@@ -544,14 +565,21 @@ def render(args):
         if track:
             paint.cursor(ov, track, gs, t)
         blend(frame, ov)
-        ov = Image.new("RGBA", (W, H))  # captions stay put
-        covered = 0
-        if cur:
-            i, step, alpha = cur
-            covered = paint.caption(ov, step, i + 1, len(steps), alpha, step.get("anchor"))
+        if canvas:
+            out_frame = np.empty((CH, CW, 3), np.uint8)
+            out_frame[:] = canvas["color"]
+            out_frame[oy:oy + H, ox:ox + W] = frame
+            frame = out_frame
+        ov = Image.new("RGBA", (CW, CH))  # captions and blocks stay put
+        kind = style["caption"]
+        callout = cur and kind == "callout" and cur[1].get("anchor")
+        cap = paint.caption_block(cur[1], cur[0] + 1, len(steps)) if cur and kind != "none" and not callout else None
+        placed = paint.blocks(ov, corner + ([cap] if cap else []) + blocks, t, tokens)
+        if callout:
+            paint.callout(ov, cur[1], cur[0] + 1, len(steps), cur[2], cur[1]["anchor"])
+        covered = CH - placed[id(cap)][1] if cap and cap["at"] == "bottom" and id(cap) in placed else 0
         if k := key_at(keys, t):  # above a bottom caption
-            paint.keys(ov, k[0], t, k[1], H - round(24 * paint.s) - (covered and covered - round(12 * paint.s)))
-        paint.corner(ov, fmt(t) + (f"  ·  步驟 {cur[0] + 1}/{len(steps)}" if cur else "") + (f"  ·  快轉 {args.idle_speed}×" if span else ""))
+            paint.keys(ov, k[0], t, k[1], CH - round(24 * s) - (covered and covered - round(12 * s)))
         blend(frame, ov)
         if framer:
             frame = framer(frame)
@@ -584,6 +612,7 @@ def main(argv=None):
     ap.add_argument("--events", required=True)
     ap.add_argument("--steps")
     ap.add_argument("--masks")
+    ap.add_argument("--blocks")
     ap.add_argument("--from")
     ap.add_argument("--to")
     ap.add_argument("--offset", type=float, default=0.0)

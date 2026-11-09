@@ -28,6 +28,15 @@ def rgb(c):
         return None
 
 
+def rgba(c):
+    """'#rrggbb' or '#rrggbbaa' -> (r, g, b, a), or None when it is neither."""
+    c = str(c).lstrip("#")
+    try:
+        return tuple(int(c[i:i + 2], 16) for i in range(0, len(c), 2)) + ((255,) if len(c) == 6 else ()) if len(c) in (6, 8) else None
+    except ValueError:
+        return None
+
+
 def ease(u):
     u = max(0.0, min(1.0, u))
     return u * u * (3 - 2 * u)
@@ -65,8 +74,8 @@ class Canvas:
         return (X - x0) * kx, (Y - y0) * ky
 
     def paste(self, ov, im, x, y):
-        """alpha_composite im at (x, y), clipped to the frame."""
+        """alpha_composite im at (x, y), clipped to the overlay."""
         x, y = round(x), round(y)
-        box = (max(0, -x), max(0, -y), min(im.width, self.w - x), min(im.height, self.h - y))
+        box = (max(0, -x), max(0, -y), min(im.width, ov.width - x), min(im.height, ov.height - y))
         if box[0] < box[2] and box[1] < box[3]:
             ov.alpha_composite(im.crop(box), (x + box[0], y + box[1]))

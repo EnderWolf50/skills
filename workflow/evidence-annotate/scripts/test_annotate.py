@@ -510,14 +510,106 @@ def test_step_anchor_is_the_first_press_inside_else_the_first_box():
     assert a.step_anchor({"from": 0, "to": 1}, gs) is None
 
 
-@pytest.mark.parametrize("kind", text.CAPTIONS)
-def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
+@pytest.mark.parametrize("kind", ["pill", "chapter", "callout"])
+def test_every_caption_draws_where_its_kind_puts_it(kind):
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"caption": kind}}))
     ov = Image.new("RGBA", (1280, 720))
-    covered = p.caption(ov, {"title": "Save", "note": "closes the form"}, 2, 3, 1.0, (900, 400))
-    assert ov.getbbox() is not None
-    assert (covered > 0) == (kind == "pill")
+    step = {"from": 1.0, "to": 5.0, "title": "Save", "note": "closes the form"}
+    edge = text.CAP_EDGE * 18 / text.CAPTION_DESIGN
+    if kind == "callout":
+        p.callout(ov, step, 2, 3, 1.0, (900, 400))
+        x0, y0, x1, y1 = ov.getbbox()
+        assert x1 < 900 and y0 < 400 < y1  # left of the press, level with it
+        return
+    blk = p.caption_block(step, 2, 3)
+    x, y, w, h = p.blocks(ov, [blk], 3.0, {})[id(blk)]
+    if kind == "pill":
+        assert x + w / 2 == pytest.approx(640, abs=1) and y + h == pytest.approx(720 - edge, abs=1)
+    else:
+        assert (x, y) == (pytest.approx(edge, abs=1), pytest.approx(edge, abs=1))
+    assert a.load_style({"style": {"caption": "none"}})["caption"] == "none"
+
+
+def test_a_step_tag_takes_the_place_of_its_number():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    step = {"from": 1.0, "to": 5.0, "title": "Save", "tag": "結果"}
+    parts = p.caption_block(step, 2, 3)["lines"][0]
+    assert [q.get("text") for q in parts if "text" in q] == ["結果", "Save"]
+    assert text.step_label([step], (0, step, 1.0)) == "結果"
+    assert text.step_label([{}, {}], (0, {}, 1.0)) == "步驟 1/2" and text.step_label([], None) == ""
+
+
+def test_blocks_stack_at_their_anchor_and_sit_beside_when_asked():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = lambda **k: text.check_block({"lines": ["x"], **k}, "test")
+    top1, top2 = b(at="top-right"), b(at="top-right", lines=["one", "two"])
+    low1, low2 = b(at="bottom-left"), b(at="bottom-left", beside=True)
+    ov = Image.new("RGBA", (1280, 720))
+    at = p.blocks(ov, [top1, top2, low1, low2], 0, {})
+    (x1, y1, w1, h1), (_, y2, _, h2) = at[id(top1)], at[id(top2)]
+    assert x1 + w1 == pytest.approx(1270, abs=1) and y1 == pytest.approx(10, abs=1)  # 10 px off the corner
+    assert y2 == pytest.approx(y1 + h1 + text.ROW_GAP, abs=1) and h2 > h1  # the next one under it, two lines tall
+    (lx, ly, lw, lh), (bx, by, _, bh) = at[id(low1)], at[id(low2)]
+    assert by + bh == pytest.approx(ly + lh, abs=1) and bx == pytest.approx(lx + lw + text.SIDE_GAP, abs=1)  # beside
+
+
+def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = text.check_block({"lines": [["{clock}", "{step}", "{speed}"]], "sep": " · "}, "test")
+    narrow = p.block_image(b, {"clock": "10:00:00.0", "step": "", "speed": ""}).width
+    wide = p.block_image(b, {"clock": "10:00:00.0", "step": "步驟 1/2", "speed": ""}).width
+    assert wide > narrow  # an empty token drops its part and its separator
+    assert p.block_image(text.check_block({"lines": ["{speed}"]}, "t"), {"speed": ""}) is None  # nothing to show
+    long = text.check_block({"lines": ["x" * 400], "max_w": 200}, "test")
+    assert p.block_image(long, {}).width <= 200 + 1
+    fact = text.check_block({"lines": [[{"text": "排序：", "color": "#aeb4bc"}, {"text": "true", "color": "#5bd07a", "bold": True}]],
+                             "bullets": True, "bar": "#d97757"}, "test")
+    assert p.block_image(fact, {}) is not None
+    for bad in ({"at": "middle"}, {"colour": "#fff"}, {"bg": "black"}, {"rect": [0, 0, 0, 5]}, {"lines": [[{"txt": "x"}]]}):
+        with pytest.raises(SystemExit):
+            text.check_block(bad, "test")
+
+
+def test_a_cover_fills_its_rect_on_the_recording_through_the_zoom():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    cov = text.check_block({"rect": [100, 600, 200, 50], "bg": "#15181e", "lines": ["new"]}, "test")
+    ov = Image.new("RGBA", (1280, 720))
+    p.cover(ov, cov, 0, {}, SPACE)
+    assert ov.getbbox() == (100, 600, 300, 650) and ov.getpixel((110, 640)) == (0x15, 0x18, 0x1E, 255)
+    p.view = (0, 360, 2, 2)  # zoomed 2x into the lower left
+    ov = Image.new("RGBA", (1280, 720))
+    p.cover(ov, cov, 0, {}, SPACE)
+    assert ov.getbbox()[:2] == (200, 480)
+
+
+def test_load_blocks_reads_the_canvas_and_the_blocks(tmp_path):
+    f = tmp_path / "blocks.json"
+    f.write_text(json.dumps({"canvas": {"top": 40, "bottom": 40}, "blocks": [{"from": "10:00:01", "to": "10:00:03", "lines": ["hi"]}]}))
+    canvas, blocks, space = text.load_blocks(f)
+    assert canvas == {"top": 40, "bottom": 40, "left": 0, "right": 0, "color": (0x11, 0x13, 0x18)} and space is None
+    assert blocks[0]["from"] == common.hms("10:00:01") and blocks[0]["lines"] == [[{"text": "hi"}]]
+    f.write_text(json.dumps({"canvas": {"top": -1}}))
+    with pytest.raises(SystemExit):
+        text.load_blocks(f)
+
+
+def test_idle_spans_hold_a_block_while_it_is_read():
+    keys = text.key_items([ev("10:00:30.0", "key", keys="Enter")])
+    blk = text.check_block({"from": "10:00:01.0", "lines": ["x" * 30]}, "test")
+    quiet = a.idle_spans([], keys, [], 2.0, [blk])[0][0]
+    assert quiet == pytest.approx(common.hms("10:00:01.0") + 6.5 + a.IDLE_EDGE_S)
+    assert a.idle_spans([], keys, [], 2.0, [{**blk, "read": False}]) == []
+
+
+def test_the_corner_is_a_block_that_style_can_change_or_drop():
+    assert a.load_style({})["corner"]["at"] == "bottom-left"
+    assert a.load_style({"style": {"corner": {"at": "top-right"}}})["corner"]["at"] == "top-right"
+    assert a.load_style({"style": {"corner": False}})["corner"] is False
+    with pytest.raises(SystemExit):
+        a.load_style({"style": {"corner": "yes"}})
 
 
 def test_caption_size_scales_the_capsule_and_the_key_pill():

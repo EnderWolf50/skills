@@ -1,0 +1,102 @@
+{
+ "canvas": {
+  "top": 40,
+  "bottom": 40,
+  "color": "#15181e"
+ },
+ "blocks": [
+  {
+   "at": "top-left",
+   "size": 17,
+   "margin": 8,
+   "bg": null,
+   "lines": [
+    [
+     {
+      "text": "T12",
+      "bold": true,
+      "color": "#d97757"
+     },
+     "  依狀態查詢：只列出進行中的案件"
+    ]
+   ]
+  },
+  {
+   "from": "10:00:24",
+   "to": "10:00:31",
+   "at": "top-right",
+   "margin": 0,
+   "radius": 0,
+   "bg": "#262b33",
+   "bar": "#d97757",
+   "lines": [
+    [
+     {
+      "text": "tester-1",
+      "color": "#aeb4bc"
+     }
+    ],
+    [
+     {
+      "text": "結果 ",
+      "bold": true
+     },
+     {
+      "text": "PASS",
+      "bold": true,
+      "color": "#5bd07a"
+     },
+     {
+      "text": "  {speed}",
+      "color": "#ffc040"
+     }
+    ]
+   ]
+  },
+  {
+   "from": "10:00:24",
+   "to": "10:00:31",
+   "at": "top-right",
+   "radius": 0,
+   "bg": "#262b33",
+   "bullets": true,
+   "lines": [
+    [
+     {
+      "text": "排序：",
+      "color": "#aeb4bc"
+     },
+     "重要性 降冪"
+    ],
+    [
+     {
+      "text": "前三筆：",
+      "color": "#aeb4bc"
+     },
+     "案件A > 案件B > 案件C"
+    ]
+   ]
+  },
+  {
+   "from": "10:00:24",
+   "to": "10:00:31",
+   "at": "bottom-left",
+   "beside": true,
+   "lines": [
+    "依「重要性」降冪排序"
+   ]
+  },
+  {
+   "from": "10:00:20",
+   "to": "10:00:31",
+   "rect": [
+    0,
+    690,
+    1280,
+    30
+   ],
+   "bg": "#15181e",
+   "read": false
+  }
+ ]
+}
