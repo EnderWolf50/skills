@@ -51,13 +51,13 @@ Both leave the press point itself exact.
 
 ## Captions
 
-`caption` picks the step caption, the same capsule ("n/total │ title", an 18 px title at 1280 wide) wherever it sits:
+`caption` picks the step caption, the same capsule ("n/total │ title") wherever it sits:
 
 - `pill` (default): bottom centre, 13 px off the edge at 1280 wide.
 - `chapter`: top left, 13 px off the edges.
 - `callout`: beside the step's first press, else its first box, on the side away from the pointer and its name tag, else the side that fits best, kept inside the frame; `pill` without an anchor.
 
-`dot: true` adds an amber dot in front.
+`caption_size` (default `18`, `8` to `64`) is the title's px at 1280 wide; the capsule, its margin and the key pill scale with it. `dot: true` adds an amber dot in front.
 
 ## Frame
 

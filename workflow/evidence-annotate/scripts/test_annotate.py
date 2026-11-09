@@ -517,6 +517,21 @@ def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
     assert (covered > 0) == (kind == "pill")
 
 
+def test_caption_size_scales_the_capsule_and_the_key_pill():
+    from PIL import Image
+    def heights(size):
+        p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"caption_size": size}}))
+        ov = Image.new("RGBA", (1280, 720))
+        p.keys(ov, {"caps": ["Ctrl", "S"]}, 0, 1.0, 700)
+        _, y0, _, y1 = ov.getbbox()
+        return p.capsule(1, 2, "Save").height, y1 - y0
+    small, big = heights(18), heights(36)
+    assert big[0] == pytest.approx(2 * small[0], abs=2) and big[1] == pytest.approx(2 * small[1], abs=2)
+    assert a.load_style({})["caption_size"] == 18
+    with pytest.raises(SystemExit):
+        a.load_style({"style": {"caption_size": 4}})
+
+
 def test_dot_adds_an_amber_dot_before_the_step_number():
     def amber(dot):
         p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"dot": dot}}))

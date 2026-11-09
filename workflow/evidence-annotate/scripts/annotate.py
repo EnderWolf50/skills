@@ -56,9 +56,10 @@ PRESS_K = 0.8
 MARK_SIZE = 0.6  # the style.size at which the touch dot is 22 px in radius and the click ring grows to RING_R (at
 # 1280 wide); they and the drag trail follow size from there
 RING_R = 60  # px: about 1.5 times the arrow's height, as CleanShot X's click ring grows to
-CAPTION_K = 0.65  # step captions and key pills at this scale of their first design: an 18 px title, 14 px keys
+CAPTION_DESIGN = 28  # px: the title size the step capsule and the key pill were laid out around; style.caption_size
+# scales both from it (the key pill's text is 22/28 of the title's)
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "caption_size": 18, "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "shrink"},
@@ -294,7 +295,7 @@ def load_style(doc, preset="evidence"):
         sys.exit(f"events: style.caption must be one of {', '.join(CAPTIONS)}, got {st['caption']!r}")
     if isinstance(st["zoom"], bool):  # true is the default magnification, false is off
         st["zoom"] = ZOOM_DEFAULT if st["zoom"] else 0
-    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("size", 0.3, 2), ("zoom", 0, 4), ("idle_fade", 0, 600)):
+    for k, lo, hi in (("arc", 0, 1), ("tilt", 0, 1), ("size", 0.3, 2), ("zoom", 0, 4), ("idle_fade", 0, 600), ("caption_size", 8, 64)):
         if k == "tilt" and st[k] == "aim":
             continue
         if not isinstance(st[k], (int, float)) or not lo <= st[k] <= hi:
@@ -622,7 +623,8 @@ class Painter:
         self.tag_spec = TAG[self.style["cursor"]]
         self.tag_h = TAG_H * s * self.style["size"]
         self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
-        c = s * CAPTION_K
+        self.ck = self.style["caption_size"] / CAPTION_DESIGN  # the step capsule and key pill scale with the title
+        c = s * self.ck
         self.f_key = font(round(22 * c), 600)
         self.f_cap, self.f_cap_n = font(round(28 * c), 600), font(round(22 * c), 600)
         self.cache = {}
@@ -849,7 +851,7 @@ class Painter:
         the title."""
         key = ("capsule", n, total, title)
         if key not in self.cache:
-            s = self.s * CAPTION_K
+            s = self.s * self.ck
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             num = f"{n}/{total}"
             nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
@@ -876,7 +878,7 @@ class Painter:
     def caption(self, ov, step, n, total, alpha, anchor):
         """Draw the step caption, the same capsule wherever style.caption puts it; returns how much of the bottom
         edge it covers (for the key pill)."""
-        s, kind = self.s * CAPTION_K, self.style["caption"]
+        s, kind = self.s * self.ck, self.style["caption"]
         cap = self.capsule(n, total, step["title"])
         alpha, rise = cap_in(alpha)
         rise *= s
@@ -901,7 +903,7 @@ class Painter:
 
     def keys(self, ov, item, t, alpha, bottom):
         """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
-        s = self.s * CAPTION_K
+        s = self.s * self.ck
         d = ImageDraw.Draw(ov)
         pad, h, cap_h, gap = 12 * s, 54 * s, 38 * s, 22 * s
         if "caps" in item:
