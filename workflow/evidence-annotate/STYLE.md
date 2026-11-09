@@ -22,7 +22,7 @@
   | `cua` | `0.25` | `1` | `true` | `sparks` |
 
 - `color` `#rrggbb`: rings, effects, and the `cua`/`figma` pointer and name tag (default `#5ec0e8` for `cua`, else `#4785ff`). One colour per actor reads well.
-- `size`: scales the pointer with its name tag, glow, comet trail and float, and the touch dot, click ring and drag trail (default `0.6`: an arrow about 38 px tall and a touch dot of 22 px radius at 1280 wide; `0.3` to `2`).
+- `size`: scales the pointer with its name tag, glow, comet trail and float, and the touch dot, click ring and drag trail (default `0.4`: an arrow about 25 px tall, a touch dot of 15 px radius and a click ring growing from 20 to 40 px radius in 0.4 s at 1280 wide, clear until it ends, as CleanShot X's; `0.3` to `2`).
 - `click`, how a mouse pointer marks a press: `ring` (a click ring, the pointer shrinking to 0.8), `shrink` (Figma's: no ring, snapping down to 0.75 in 80 ms and springing back over 0.3 s), `sparks` (Cua's: three short strokes off the tip). `pointer` `touch` and `none` always ring.
 - `trail`: the drag trail (default on for `touch` and `none`, off for a drawn mouse pointer, as macOS, Figma and Cua draw none).
 
@@ -53,11 +53,11 @@ Both leave the press point itself exact.
 
 `caption` picks the step caption, the same capsule ("n/total │ title") wherever it sits:
 
-- `pill` (default): bottom centre, 20 px off the edge at 1280 wide.
-- `chapter`: top left, 20 px off the edges.
+- `pill` (default): bottom centre, 13 px off the edge at 1280 wide.
+- `chapter`: top left, 13 px off the edges.
 - `callout`: beside the step's first press, else its first box, on the side away from the pointer and its name tag, else the side that fits best, kept inside the frame; `pill` without an anchor.
 
-`dot: true` adds an amber dot in front.
+`caption_size` (default `18`, `8` to `64`) is the title's px at 1280 wide; the capsule, its margin and the key pill scale with it. `dot: true` adds an amber dot in front.
 
 ## Frame
 
