@@ -9,10 +9,10 @@ uv run annotate.py VIDEO -o OUT.mp4 --start HH:MM:SS[.fff] --events events.json 
     [--idle-speed N [--idle-after S]] [--preset NAME] [--font FILE] [--no-video]
 
 --start   wall time of the first video frame; every other time (events, steps, --from, --to, --frames) is wall time
---events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up","x","y","x2"?,"y2"?,"ms"?}
+--events  {"space":[w,h],"pointer"?:"touch|mouse|none","style"?:{...},"events":[{"t","kind":"tap|swipe|down|up|move","x","y","x2"?,"y2"?,"ms"?}
           or {"t","kind":"key","keys":"Ctrl+S"} or {"t","kind":"type","text":"...","ms"?}]}; coordinates in
           `space`, mapped to the frame by its own size. swipe runs x,y -> x2,y2 over ms; down/up bracket a press
-          (up may carry x,y = the release point)
+          (up may carry x,y = the release point); move takes the mouse pointer there without pressing
 --steps   [{"from","to","title","note"? (not drawn: for the report),"boxes"?:[[x,y,w,h,"label"]],"zoom"?:[x,y,w,h]}] in the events' space
 --masks   {"space":[w,h],"masks":[{"template":"a.png","threshold":0.8,"boxes":[[x,y,w,h]]}]}: a box is blacked out
           while its template matches (2 fps scan, +-1 s around each hit); template paths relative to the masks file
@@ -52,8 +52,11 @@ RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold'
 PRESS_S = 0.08  # pointer shrinks to PRESS_K over this long before a press (ease-out), as Figma's snaps down
 RELEASE_S = 0.3  # and springs back over this long after the release (back-out, a 2.5 % overshoot)
 PRESS_K = 0.8
+MARK_SIZE = 0.6  # the style.size at which the touch dot is 22 px in radius and the click ring grows to 100 px (at
+# 1280 wide); they and the drag trail follow size from there
+CAPTION_K = 0.65  # step captions and key pills at this scale of their first design: an 18 px title, 14 px keys
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
-         "tilt": None, "glow": None, "click": None, "size": 0.6, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
+         "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
 # cursor's own (COLORS), arc / tilt / glow None = the cursor's own (CURSOR_MOTION); zoom and idle_fade 0 = off
 CURSOR_MOTION = {"cua": {"arc": 0.25, "tilt": 1.0, "glow": True, "click": "sparks"},  # Cua's own swing; an upright arrow reads calmer
                  "mac": {"arc": 0.1, "tilt": 0.0, "glow": False, "click": "shrink"},
@@ -134,13 +137,15 @@ def fmt(t, nd=1):
 # ---------------------------------------------------------------- events -> gestures
 
 def gestures(events):
-    """Gestures in event space: {"kind": tap|hold|drag, "t0", "t1", "pts": [(t, x, y), ...]} sorted by t0.
+    """Gestures in event space: {"kind": tap|hold|drag|move, "t0", "t1", "pts": [(t, x, y), ...]} sorted by t0. A
+    `move` while a press is held is a point on its path; any other `move` is a gesture of its own (t0 = t1): a
+    point the mouse pointer glides to without pressing (presses() leaves those out).
 
     ponytail: one contact; a second `down` while one is open closes the first at that time."""
     out, held = [], None
     for e in sorted((e for e in events if e["kind"] not in KEYS), key=lambda e: hms(e["t"])):
         t, k = hms(e["t"]), e["kind"]
-        need = {"tap": "xy", "swipe": ("x", "y", "x2", "y2"), "down": "xy"}.get(k, ())
+        need = {"tap": "xy", "swipe": ("x", "y", "x2", "y2"), "down": "xy", "move": "xy"}.get(k, ())
         if missing := [f for f in need if f not in e]:
             raise ValueError(f"{k} event at {e['t']} lacks {', '.join(missing)}: {e}")
         if k in ("tap", "swipe"):
@@ -158,15 +163,27 @@ def gestures(events):
                     held["pts"].append((t, e["x"], e["y"]))
                 held["t1"] = t
                 held = None
+        elif k == "move":
+            if held:
+                held["pts"].append((t, e["x"], e["y"]))
+            else:
+                out.append({"kind": "move", "t0": t, "t1": t, "pts": [(t, e["x"], e["y"])]})
         else:
             raise ValueError(f"bad event {e}")
     if held:
         held["t1"] = max(held["t1"], held["t0"] + 0.05)
     for g in out:
+        if g.get("kind") == "move":
+            continue
         x0, y0 = g["pts"][0][1:]
         moved = any(abs(x - x0) > 4 or abs(y - y0) > 4 for _, x, y in g["pts"])
         g["kind"] = "drag" if moved else "hold" if g["t1"] - g["t0"] > HOLD_S else "tap"
     return sorted(out, key=lambda g: g["t0"])
+
+
+def presses(gs):
+    """The gestures that press (rings, the touch dot, the press shrink, the camera): all but the moves."""
+    return [g for g in gs if g["kind"] != "move"]
 
 
 def pos_at(g, t):
@@ -183,8 +200,8 @@ def pos_at(g, t):
 
 
 class Track:
-    """Where a mouse pointer is: at rest on the gestures, gliding between them as Cua Driver moves its cursor
-    (cursor_motion), arriving as each press starts. Glides are planned in 1280-wide frame pixels."""
+    """Where a mouse pointer is: at rest on the gestures (presses and moves), gliding between them as Cua Driver
+    moves its cursor (cursor_motion), arriving as each one starts. Glides are planned in 1280-wide frame pixels."""
 
     def __init__(self, gs, style, to_px):
         self.gs, self.to_px = gs, to_px  # to_px: event space -> 1280-wide pixels
@@ -599,12 +616,13 @@ class Painter:
 
         self.f_badge, self.f_small, self.f_label = font(round(20 * s), 800), font(round(13 * s), 500), font(round(15 * s), 600)
         self.fx = FX * self.style["size"]
-        self.mark_k = self.style["size"] / STYLE["size"]  # the touch dot, click ring and drag trail follow size; 1 at the default
+        self.mark_k = self.style["size"] / MARK_SIZE  # the touch dot, click ring and drag trail follow size
         self.tag_spec = TAG[self.style["cursor"]]
         self.tag_h = TAG_H * s * self.style["size"]
         self.f_tag = font(round(self.tag_h * 0.52), 700 if self.tag_spec["glow"] else 600)
-        self.f_key = font(round(22 * s), 600)
-        self.f_cap, self.f_cap_n = font(round(28 * s), 600), font(round(22 * s), 600)
+        c = s * CAPTION_K
+        self.f_key = font(round(22 * c), 600)
+        self.f_cap, self.f_cap_n = font(round(28 * c), 600), font(round(22 * c), 600)
         self.cache = {}
         self.view = None  # (x0, y0, kx, ky): the zoom's crop box in frame pixels and its magnification
 
@@ -645,7 +663,7 @@ class Painter:
                    width=max(1, round(0.045 * L)))
 
     def ring(self, ov, X, Y, age):
-        """Click ring: grows to 100 px (at 1280 wide and the default size) with ease-out cubic and fades over RING_S after the press."""
+        """Click ring: grows to 100 px (at 1280 wide and size MARK_SIZE) with ease-out cubic and fades over RING_S after the press."""
         p = age / RING_S
         if 0 <= p <= 1:
             R, a = 100 * self.s * self.mark_k, 0.7 * (1 - p) ** 1.5
@@ -828,7 +846,7 @@ class Painter:
         the title."""
         key = ("capsule", n, total, title)
         if key not in self.cache:
-            s = self.s
+            s = self.s * CAPTION_K
             probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
             num = f"{n}/{total}"
             nw, tw = probe.textlength(num, font=self.f_cap_n), probe.textlength(title, font=self.f_cap)
@@ -855,7 +873,7 @@ class Painter:
     def caption(self, ov, step, n, total, alpha, anchor):
         """Draw the step caption, the same capsule wherever style.caption puts it; returns how much of the bottom
         edge it covers (for the key pill)."""
-        s, kind = self.s, self.style["caption"]
+        s, kind = self.s * CAPTION_K, self.style["caption"]
         cap = self.capsule(n, total, step["title"])
         alpha, rise = cap_in(alpha)
         rise *= s
@@ -880,7 +898,7 @@ class Painter:
 
     def keys(self, ov, item, t, alpha, bottom):
         """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far."""
-        s = self.s
+        s = self.s * CAPTION_K
         d = ImageDraw.Draw(ov)
         pad, h, cap_h, gap = 12 * s, 54 * s, 38 * s, 22 * s
         if "caps" in item:
@@ -1026,11 +1044,17 @@ def encoder_args():
 IDLE_EDGE_S = 0.3  # an idle span starts and ends this far inside its quiet gap, so motion around it plays at 1x
 
 
+def read_s(text):
+    """Seconds a caption takes to read: 1.5 plus one per 6 characters, from 2.5 to 9."""
+    return min(9.0, max(2.5, 1.5 + len(text) / 6))
+
+
 def idle_spans(gs, keys, steps, after):
-    """Wall-time spans [a, b] with nothing to follow for more than `after` seconds: no glide, press or ring
-    (0.8 s before a press to 1 s after), no key pill, no step caption appearing (its first 1.5 s)."""
+    """Wall-time spans [a, b] with nothing to follow for more than `after` seconds: no glide, press, move or ring
+    (0.8 s before one to 1 s after), no key pill, no step caption still being read (read_s of its title from its
+    start, ending with the step)."""
     busy = sorted([(g["t0"] - 0.8, g["t1"] + 1.0) for g in gs] + [(k["t0"] - 0.3, k["t1"]) for k in keys]
-                  + [(st["from"] - 0.3, st["from"] + 1.5) for st in steps])
+                  + [(st["from"] - 0.3, min(st["to"], st["from"] + read_s(st["title"]))) for st in steps])
     spans, end = [], -np.inf
     for a, b in busy:
         if end > -np.inf and a - end > after:
@@ -1106,12 +1130,15 @@ def clip_bounds(start, frm, to, total):
 def render(args):
     doc = json.loads(Path(args.events).read_text(encoding="utf-8"))
     space = parse_space(doc, "events")
-    gs = shift(gestures(doc["events"]), args.offset)
+    items = shift(gestures(doc["events"]), args.offset)
     keys = key_items(doc["events"], args.offset)
     pointer = doc.get("pointer", "touch")
     style = load_style(doc, args.preset)
     if pointer not in POINTERS:
         sys.exit(f"events: pointer must be one of {', '.join(POINTERS)}, got {pointer!r}")
+    gs = presses(items)
+    if pointer != "mouse":  # a move only steers the drawn mouse pointer
+        items = gs
     steps = load_steps(args.steps) if args.steps else []
     for st in steps:
         st["anchor"] = step_anchor(st, gs)
@@ -1125,10 +1152,10 @@ def render(args):
     num, den = map(int, st["r_frame_rate"].split("/"))
     fps = num / den
     ss, dur = clip_bounds(start, getattr(args, "from"), args.to, float(probe["format"]["duration"]))
-    print(f"[annotate] {len(gs)} gestures, {len(keys)} key pills, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
+    print(f"[annotate] {len(gs)} gestures, {len(items) - len(gs)} moves, {len(keys)} key pills, {len(steps)} steps, {len(masks)} masks, clip {ss:.1f}+{dur:.1f}s", flush=True)
     spans = mask_spans(args.video, ss, dur, masks, mspace) if masks else []
     paint = Painter(W, H, space, pick_font(args.font), style)
-    track = paint.track(gs) if pointer == "mouse" and gs else None
+    track = paint.track(items) if pointer == "mouse" and items else None
     cam = Camera(gs, keys, space, style["zoom"]) if style["zoom"] > 1 else None
     want = frame_indices(args.frames.split(","), start, ss, fps, int(dur * fps)) if args.frames else set()
     dec = subprocess.Popen(["ffmpeg", "-v", "error", "-ss", f"{ss:.3f}", "-t", f"{dur:.3f}", "-i", args.video,
@@ -1142,7 +1169,7 @@ def render(args):
         env={**os.environ, "SVT_LOG": "1"})  # libsvtav1 prints its banner past -v error unless told
     n, size, gi = 0, W * H * 3, 0
     out = FrameWriter(enc.stdin) if enc else None
-    fast = idle_spans(gs, keys, steps, args.idle_after) if args.idle_speed > 1 else []
+    fast = idle_spans(items, keys, steps, args.idle_after) if args.idle_speed > 1 else []
     if fast:
         print(f"[annotate] {len(fast)} idle spans at {args.idle_speed}x, {sum(b - a for a, b in fast):.1f}s of wall time", flush=True)
     kept = 0

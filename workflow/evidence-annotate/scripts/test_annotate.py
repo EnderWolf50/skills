@@ -72,6 +72,13 @@ def test_events_missing_coordinates_name_the_gap():
         a.gestures([ev("10:00:00", "swipe", 1, 1, y2=5)])
     with pytest.raises(ValueError, match="tap"):
         a.gestures([{"t": "10:00:00", "kind": "tap"}])
+    with pytest.raises(ValueError, match="move .* lacks y"):
+        a.gestures([{"t": "10:00:00", "kind": "move", "x": 1}])
+
+
+def test_a_move_while_pressed_is_a_point_of_the_drag():
+    (g,) = a.gestures([ev("10:00:01.0", "down", 100, 100), ev("10:00:01.2", "move", 300, 120), ev("10:00:01.5", "up")])
+    assert g["kind"] == "drag" and g["pts"][-1][1:] == (300, 120)
 
 
 def test_fmt_rounds_without_printing_sixty_seconds():
@@ -240,6 +247,26 @@ def test_track_rests_then_glides_to_arrive_on_the_next_press():
     assert 100 < x < 500 and h != a.cm.REST_HEADING  # leans into the move
     assert tr.at(t1)[:2] == pytest.approx((500, 300), abs=1)
     assert tr.at(t1 + 9)[:3] == (500, 300, a.cm.REST_HEADING)
+
+
+def test_a_move_is_a_point_the_pointer_glides_to_without_pressing():
+    items = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:03.0", "move", 600, 300), ev("10:00:06.0", "tap", 900, 500)])
+    assert [g["kind"] for g in items] == ["tap", "move", "tap"] and len(a.presses(items)) == 2
+    tr = track(items)
+    t = a.hms("10:00:03.0")
+    start, _, traj, _ = tr.glides[0]
+    assert start == pytest.approx(t - traj.arrival)  # arrives as the move happens
+    assert tr.at(t + 2)[:2] == pytest.approx((600, 300), abs=1)  # and rests there until the next glide
+    assert a.press_k(a.presses(items), t) == 1  # a move does not press
+
+
+def test_moves_alone_draw_the_pointer():
+    from PIL import Image
+    items = a.gestures([ev("10:00:01.0", "move", 640, 360)])
+    p = a.Painter(1280, 720, SPACE, FONT)
+    ov = Image.new("RGBA", (1280, 720))
+    p.cursor(ov, p.track(items), a.presses(items), a.hms("10:00:02.0"))
+    assert ov.getpixel((642, 364))[3] > 200  # the arrow rests with its tip on the point
 
 
 def test_track_squeezes_a_glide_into_a_short_gap_and_skips_none():
@@ -435,6 +462,18 @@ def test_idle_spans_cover_only_long_quiet_gaps_inside_their_edges():
                      pytest.approx((a.hms("10:00:11.0") + 0.3, a.hms("10:00:20.0") - 0.8 - 0.3))]
 
 
+def test_idle_spans_hold_a_step_caption_while_it_is_read():
+    keys = a.key_items([ev("10:00:30.0", "key", keys="Enter")])
+    def quiet_from(title, to="10:00:29.0"):
+        steps = [{"from": a.hms("10:00:01.0"), "to": a.hms(to), "title": title}]
+        return a.idle_spans([], keys, steps, 2.0)[0][0]
+    t = a.hms("10:00:01.0") + a.IDLE_EDGE_S
+    assert quiet_from("Save") == pytest.approx(t + 2.5)  # a short title: the 2.5 s floor
+    assert quiet_from("x" * 30) == pytest.approx(t + 6.5)  # 1.5 s plus a second per 6 characters
+    assert quiet_from("x" * 120) == pytest.approx(t + 9)  # a long one stops at 9 s
+    assert quiet_from("x" * 120, "10:00:05.0") == pytest.approx(a.hms("10:00:05.0") + a.IDLE_EDGE_S)  # never past the step
+
+
 def test_framer_pads_keeps_the_frame_and_rounds_its_corners():
     f = a.Framer(1280, 720, [(109, 93, 252), (242, 123, 155)])
     out = f(np.full((720, 1280, 3), 200, np.uint8))
@@ -523,6 +562,6 @@ def test_the_touch_dot_and_ring_follow_size():
         p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + t, "touch")
         x0, _, x1, _ = ov.getbbox()
         return x1 - x0
-    assert 36 <= width(0.6, 0.0) <= 46  # a dot of 22 px radius (28 drew 50) at the default size
+    assert 36 <= width(0.6, 0.0) <= 46  # a dot of 22 px radius (28 drew 50) at MARK_SIZE
     assert width(1.2, 0.0) == pytest.approx(2 * width(0.6, 0.0), abs=4)
     assert width(1.2, 0.5) == pytest.approx(2 * width(0.6, 0.5), abs=6)  # the ring grows with it
