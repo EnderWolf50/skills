@@ -355,11 +355,18 @@ class Framer:
 
 
 def blend(frame, ov):
-    """Alpha-composite the RGBA overlay onto the RGB frame in place, only inside the overlay's bounding box."""
-    box = ov.getbbox()
-    if box:
-        x0, y0, x1, y1 = box
-        o, im = ov.crop(box), Image.fromarray(frame[y0:y1, x0:x1])
+    """Alpha-composite the RGBA overlay onto the RGB frame in place, band by band: each run of rows with something
+    drawn (runs more than 16 empty rows apart), inside that run's own box. One box round a header at the top and a
+    clock at the bottom would span the whole frame."""
+    a = np.asarray(ov.getchannel("A"))
+    rows = np.flatnonzero(a.any(axis=1))
+    if not len(rows):
+        return
+    cut = np.flatnonzero(np.diff(rows) > 16)
+    for y0, y1 in zip(np.r_[rows[0], rows[cut + 1]], np.r_[rows[cut], rows[-1]] + 1):
+        cols = np.flatnonzero(a[y0:y1].any(axis=0))
+        x0, x1 = cols[0], cols[-1] + 1
+        o, im = ov.crop((x0, y0, x1, y1)), Image.fromarray(frame[y0:y1, x0:x1])
         im.paste(o, (0, 0), o)  # PIL's own blend: ten times numpy's float path on a full-frame box
         frame[y0:y1, x0:x1] = np.asarray(im)
 

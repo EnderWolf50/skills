@@ -455,11 +455,9 @@ class TextLayer(Canvas):
         sx, sy = self.w / space[0], self.h / space[1]
         X0, Y0 = self.vp(x * sx, y * sy)
         X1, Y1 = self.vp((x + w) * sx, (y + h) * sy)
-        if blk["bg"]:
-            layer = Image.new("RGBA", ov.size)
+        if blk["bg"]:  # covers go first onto a clear overlay, so drawing straight onto it is the same as compositing
             r = (blk["radius"] or 0) * self.s
-            ImageDraw.Draw(layer).rounded_rectangle([X0, Y0, X1 - 1, Y1 - 1], radius=r, fill=(*blk["bg"][:3], round(blk["bg"][3] * a)))
-            ov.alpha_composite(layer)
+            ImageDraw.Draw(ov).rounded_rectangle([X0, Y0, X1 - 1, Y1 - 1], radius=r, fill=(*blk["bg"][:3], round(blk["bg"][3] * a)))
         if im := self.block_image(blk, tokens, bg=False):
             self.paste(ov, fade(im, a) if a < 1 else im, X0, Y0)
 
