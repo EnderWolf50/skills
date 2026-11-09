@@ -56,8 +56,13 @@ Both leave the press point itself exact.
 - `pill` (default): bottom centre, 13 px off the edge at 1280 wide.
 - `chapter`: top left, 13 px off the edges.
 - `callout`: beside the step's first press, else its first box, on the side away from the pointer and its name tag, else the side that fits best, kept inside the frame; `pill` without an anchor.
+- `none`: no step caption; the project's own blocks ([`BLOCKS.md`](BLOCKS.md)) carry the steps.
 
 `caption_size` (default `18`, `8` to `64`) is the title's px at 1280 wide; the capsule, its margin and the key pill scale with it. `dot: true` adds an amber dot in front.
+
+## Corner
+
+`corner` (default `true`) is a block bottom left: the clock, the step (its `tag`, else 步驟 n/N) and 快轉 N× while an idle stretch plays fast. `false` drops it; an object of block keys ([`BLOCKS.md`](BLOCKS.md)) changes it, such as `{"at": "top-right"}` or `{"lines": ["{clock}"]}`.
 
 ## Frame
 

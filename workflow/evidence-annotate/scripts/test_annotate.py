@@ -510,14 +510,185 @@ def test_step_anchor_is_the_first_press_inside_else_the_first_box():
     assert a.step_anchor({"from": 0, "to": 1}, gs) is None
 
 
-@pytest.mark.parametrize("kind", text.CAPTIONS)
-def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
+@pytest.mark.parametrize("kind", ["pill", "chapter", "callout"])
+def test_every_caption_draws_where_its_kind_puts_it(kind):
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"caption": kind}}))
     ov = Image.new("RGBA", (1280, 720))
-    covered = p.caption(ov, {"title": "Save", "note": "closes the form"}, 2, 3, 1.0, (900, 400))
-    assert ov.getbbox() is not None
-    assert (covered > 0) == (kind == "pill")
+    step = {"from": 1.0, "to": 5.0, "title": "Save", "note": "closes the form"}
+    edge = text.CAP_EDGE * 18 / text.CAPTION_DESIGN
+    if kind == "callout":
+        p.callout(ov, step, 2, 3, 1.0, (900, 400))
+        x0, y0, x1, y1 = ov.getbbox()
+        assert x1 < 900 and y0 < 400 < y1  # left of the press, level with it
+        return
+    blk = p.caption_block(step, 2, 3)
+    x, y, w, h = p.blocks(ov, [blk], 3.0, {})[id(blk)]
+    if kind == "pill":
+        assert x + w / 2 == pytest.approx(640, abs=1) and y + h == pytest.approx(720 - edge, abs=1)
+    else:
+        assert (x, y) == (pytest.approx(edge, abs=1), pytest.approx(edge, abs=1))
+    assert a.load_style({"style": {"caption": "none"}})["caption"] == "none"
+
+
+def test_the_step_caption_and_key_pill_stay_on_the_recording_inside_the_bands():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    p.ow, p.oh, p.ox, p.oy = 1660, 760, 0, 40  # a 40 px band above, a 380 px band on the right
+    blk = p.caption_block({"from": 1.0, "to": 5.0, "title": "Save"}, 1, 2)
+    x, y, w, h = p.blocks(Image.new("RGBA", (1660, 760)), [blk], 3.0, {})[id(blk)]
+    edge = text.CAP_EDGE * 18 / text.CAPTION_DESIGN
+    assert x + w / 2 == pytest.approx(640, abs=1) and y + h == pytest.approx(760 - edge, abs=1)  # centred on the picture
+    ov = Image.new("RGBA", (1660, 760))
+    p.keys(ov, {"caps": ["Ctrl", "S"]}, 0, 1.0, 700)
+    x0, _, x1, _ = ov.getbbox()
+    assert (x0 + x1) / 2 == pytest.approx(640, abs=2)
+
+
+def test_a_step_tag_takes_the_place_of_its_number():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    step = {"from": 1.0, "to": 5.0, "title": "Save", "tag": "結果"}
+    parts = p.caption_block(step, 2, 3)["lines"][0]
+    assert [q.get("text") for q in parts if "text" in q] == ["結果", "Save"]
+    assert text.step_label([step], (0, step, 1.0)) == "結果"
+    assert text.step_label([{}, {}], (0, {}, 1.0)) == "步驟 1/2" and text.step_label([], None) == ""
+
+
+def test_blocks_stack_at_their_anchor_and_sit_beside_when_asked():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = lambda **k: text.check_block({"lines": ["x"], **k}, "test")
+    top1, top2 = b(at="top-right"), b(at="top-right", lines=["one", "two"])
+    low1, low2 = b(at="bottom-left"), b(at="bottom-left", beside=True)
+    ov = Image.new("RGBA", (1280, 720))
+    at = p.blocks(ov, [top1, top2, low1, low2], 0, {})
+    (x1, y1, w1, h1), (_, y2, _, h2) = at[id(top1)], at[id(top2)]
+    m = text.BLOCK["margin"]
+    assert x1 + w1 == pytest.approx(1280 - m, abs=1) and y1 == pytest.approx(m, abs=1)  # the margin off the corner
+    assert y2 == pytest.approx(y1 + h1 + text.ROW_GAP, abs=1) and h2 > h1  # the next one under it, two lines tall
+    (lx, ly, lw, lh), (bx, by, _, bh) = at[id(low1)], at[id(low2)]
+    assert by + bh == pytest.approx(ly + lh, abs=1) and bx == pytest.approx(lx + lw + text.SIDE_GAP, abs=1)  # beside
+
+
+def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = text.check_block({"lines": [["{clock}", "{step}", "{speed}"]], "sep": " · "}, "test")
+    narrow = p.block_image(b, {"clock": "10:00:00.0", "step": "", "speed": ""}).width
+    wide = p.block_image(b, {"clock": "10:00:00.0", "step": "步驟 1/2", "speed": ""}).width
+    assert wide > narrow  # an empty token drops its part and its separator
+    assert p.block_image(text.check_block({"lines": ["{speed}"]}, "t"), {"speed": ""}) is None  # nothing to show
+    long = text.check_block({"lines": ["x" * 400], "max_w": 200}, "test")
+    assert p.block_image(long, {}).width <= 200 + 1
+    assert p.block_image(text.check_block({"lines": ["x"], "min_w": 300}, "t"), {}).width == 300  # at least min_w
+    assert p.block_image(text.check_block({"lines": ["x"], "min_w": 300, "max_w": 200}, "t"), {}).width == 200  # max_w wins
+    fact = text.check_block({"lines": [[{"text": "排序：", "color": "#aeb4bc"}, {"text": "true", "color": "#5bd07a", "bold": True}]],
+                             "bullets": True}, "test")
+    assert p.block_image(fact, {}) is not None
+    for bad in ({"at": "middle"}, {"colour": "#fff"}, {"bar": "#d97757"}, {"bg": "black"}, {"rect": [0, 0, 0, 5]}, {"lines": [[{"txt": "x"}]]}):
+        with pytest.raises(SystemExit):
+            text.check_block(bad, "test")
+
+
+def test_a_block_can_anchor_to_the_recording_inside_the_bands():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    p.ow, p.oh, p.ox, p.oy = 1280, 800, 0, 40  # 40 px bands above and below
+    b = lambda **k: text.check_block({"lines": ["x"], **k}, "test")
+    frame, video = b(at="top-right"), b(at="top-right", area="video")
+    corner = b(at="bottom-left", area="video")
+    at = p.blocks(Image.new("RGBA", (1280, 800)), [frame, video, corner], 0, {})
+    m = text.BLOCK["margin"]
+    assert at[id(frame)][1] == pytest.approx(m, abs=1)  # in the top band
+    assert at[id(video)][1] == pytest.approx(40 + m, abs=1) and at[id(video)][0] + at[id(video)][2] == pytest.approx(1280 - m, abs=1)
+    assert at[id(corner)][1] + at[id(corner)][3] == pytest.approx(760 - m, abs=1)  # above the bottom band
+    with pytest.raises(SystemExit):
+        text.check_block({"area": "band"}, "test")
+
+
+def test_wrap_breaks_between_characters_keeps_words_and_punctuation_and_cuts_past_max_lines():
+    m = lambda f, t: 10 * len(t)  # every character 10 px
+    item = lambda t: [{"text": t}, None, 10 * len(t)]
+    rows_of = lambda rows: [[q["text"] for q, _, _ in r] for _, r in rows]
+    assert rows_of(text.wrap([item("一二三四五六七八")], 50, 2, 0, m)) == [["一二三四五"], ["六七八"]]
+    assert rows_of(text.wrap([item("一二三四，五六")], 40, 3, 0, m)) == [["一二三"], ["四，五六"]]  # no row starts with ，
+    assert rows_of(text.wrap([item("open the door now")], 120, 3, 0, m)) == [["open the"], ["door now"]]  # door kept whole
+    assert rows_of(text.wrap([item("事件M>事件A22>事件B")], 80, 3, 0, m)) == [["事件M>"], ["事件A22>"], ["事件B"]]  # names whole
+    one = rows_of(text.wrap([item("一二三四五六七八九十")], 50, 1, 0, m))
+    assert one == [["一二三四…"]]  # one row: cut to fit, with an ellipsis
+    two = rows_of(text.wrap([item("一二三四五六七八九十一二三四五")], 50, 2, 0, m))
+    assert two == [["一二三四五"], ["六七八九…"]]
+    hang = text.wrap([item("• "), item("一二三四五六")], 50, 2, 0, m, indent=20)
+    assert rows_of(hang) == [["• ", "一二三"], ["四五六"]] and hang[1][0] == 20  # the next row hangs under the text
+
+
+def test_a_hanging_part_sets_where_wrapped_rows_start():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    blk = lambda first: text.check_block({"max_w": 200, "max_lines": 3, "pad": [0, 0], "bg": None,
+                                         "lines": [[first, "x" * 60]]}, "t")
+    flat = p.block_image(blk({"text": "預期  "}), {})
+    hung = p.block_image(blk({"text": "預期  ", "hang": True}), {})
+    col = lambda im, y: next(x for x in range(im.width) if im.getpixel((x, y))[3] > 100)
+    row2 = round(13 * text.LINE_H + 6.5)  # the second row's middle
+    assert col(flat, row2) < 3 and col(hung, row2) > 20  # the second row starts under the text after the label
+
+
+def test_blocks_in_one_row_make_way_left_for_centre_and_right():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = lambda **k: text.check_block(k, "test")
+    long, mid, right = b(at="top-left", lines=["x" * 300]), b(at="top", lines=["centre"]), b(at="top-right", lines=["right"])
+    at = p.blocks(Image.new("RGBA", (1280, 720)), [long, mid, right], 0, {})
+    (lx, _, lw, _), (mx, _, mw, _), (rx, _, _, _) = at[id(long)], at[id(mid)], at[id(right)]
+    assert lx + lw <= mx - text.SIDE_GAP + 1 and mx + mw <= rx  # the long one stops short of the centre one
+    wide, r2 = b(at="top", lines=["y" * 200]), b(at="top-right", lines=["right side"])
+    at = p.blocks(Image.new("RGBA", (1280, 720)), [wide, r2], 0, {})
+    assert at[id(wide)][0] + at[id(wide)][2] <= at[id(r2)][0]  # a centre block makes way for a right one
+    cut, wrapped = b(at="bottom-left", lines=["x" * 300]), b(at="bottom-left", lines=["x" * 300], max_lines=3)
+    h_cut = p.blocks(Image.new("RGBA", (1280, 720)), [cut, b(at="bottom", lines=["c"])], 0, {})[id(cut)][3]
+    h_wrap = p.blocks(Image.new("RGBA", (1280, 720)), [wrapped, b(at="bottom", lines=["c"])], 0, {})[id(wrapped)][3]
+    assert h_wrap > 2 * h_cut  # with max_lines it wraps into rows instead of one cut row
+    with pytest.raises(SystemExit):
+        text.check_block({"max_lines": 0}, "test")
+
+
+def test_a_cover_fills_its_rect_on_the_recording_through_the_zoom():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    cov = text.check_block({"rect": [100, 600, 200, 50], "bg": "#15181e", "lines": ["new"]}, "test")
+    ov = Image.new("RGBA", (1280, 720))
+    p.cover(ov, cov, 0, {}, SPACE)
+    assert ov.getbbox() == (100, 600, 300, 650) and ov.getpixel((110, 640)) == (0x15, 0x18, 0x1E, 255)
+    p.view = (0, 360, 2, 2)  # zoomed 2x into the lower left
+    ov = Image.new("RGBA", (1280, 720))
+    p.cover(ov, cov, 0, {}, SPACE)
+    assert ov.getbbox()[:2] == (200, 480)
+
+
+def test_load_blocks_reads_the_canvas_and_the_blocks(tmp_path):
+    f = tmp_path / "blocks.json"
+    f.write_text(json.dumps({"canvas": {"top": 40, "bottom": 40}, "blocks": [{"from": "10:00:01", "to": "10:00:03", "lines": ["hi"]}]}))
+    canvas, blocks, space = text.load_blocks(f)
+    assert canvas == {"top": 40, "bottom": 40, "left": 0, "right": 0, "color": (0x11, 0x13, 0x18)} and space is None
+    assert blocks[0]["from"] == common.hms("10:00:01") and blocks[0]["lines"] == [[{"text": "hi"}]]
+    f.write_text(json.dumps({"canvas": {"top": -1}}))
+    with pytest.raises(SystemExit):
+        text.load_blocks(f)
+
+
+def test_idle_spans_hold_a_block_while_it_is_read():
+    keys = text.key_items([ev("10:00:30.0", "key", keys="Enter")])
+    blk = text.check_block({"from": "10:00:01.0", "lines": ["x" * 30]}, "test")
+    quiet = a.idle_spans([], keys, [], 2.0, [blk])[0][0]
+    assert quiet == pytest.approx(common.hms("10:00:01.0") + 6.5 + a.IDLE_EDGE_S)
+    assert a.idle_spans([], keys, [], 2.0, [{**blk, "read": False}]) == []
+
+
+def test_the_corner_is_a_block_that_style_can_change_or_drop():
+    assert a.load_style({})["corner"]["at"] == "bottom-left"
+    assert a.load_style({"style": {"corner": {"at": "top-right"}}})["corner"]["at"] == "top-right"
+    assert a.load_style({"style": {"corner": False}})["corner"] is False
+    with pytest.raises(SystemExit):
+        a.load_style({"style": {"corner": "yes"}})
 
 
 def test_caption_size_scales_the_capsule_and_the_key_pill():
