@@ -612,6 +612,7 @@ def test_wrap_breaks_between_characters_keeps_words_and_punctuation_and_cuts_pas
     assert rows_of(text.wrap([item("一二三四五六七八")], 50, 2, 0, m)) == [["一二三四五"], ["六七八"]]
     assert rows_of(text.wrap([item("一二三四，五六")], 40, 3, 0, m)) == [["一二三"], ["四，五六"]]  # no row starts with ，
     assert rows_of(text.wrap([item("open the door now")], 120, 3, 0, m)) == [["open the"], ["door now"]]  # door kept whole
+    assert rows_of(text.wrap([item("事件M>事件A22>事件B")], 80, 3, 0, m)) == [["事件M>"], ["事件A22>"], ["事件B"]]  # names whole
     one = rows_of(text.wrap([item("一二三四五六七八九十")], 50, 1, 0, m))
     assert one == [["一二三四…"]]  # one row: cut to fit, with an ellipsis
     two = rows_of(text.wrap([item("一二三四五六七八九十一二三四五")], 50, 2, 0, m))

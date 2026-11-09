@@ -31,6 +31,8 @@ LINE_H = 1.45  # line pitch, times the block's size
 ROW_GAP = 4  # px at 1280 wide between blocks stacked at one anchor
 SIDE_GAP = 6  # px at 1280 wide between blocks side by side (beside)
 BULLET = (174, 180, 188, 255)
+BREAK_AFTER = set(" 、，,；;>/|")  # a wrapped row prefers to end after one of these, if one is close behind
+BREAK_BACK = 8  # characters to look back for one
 CLOSING = set("，。、；：！？）」』》〉】,.;:!?)]}…%")  # never the first character of a wrapped row
 
 
@@ -242,7 +244,10 @@ def wrap(items, room, max_lines, gap, measure, indent=0.0):
         text = p["text"]
         n = fit(text, room - x - lead, lambda t: measure(f, t))
         if 0 < n < len(text):
-            if text[n - 1].isascii() and text[n - 1].isalnum() and text[n].isascii() and text[n].isalnum() and " " in text[:n]:
+            k = next((k for k in range(n, max(n - BREAK_BACK, 1) - 1, -1) if text[k - 1] in BREAK_AFTER), None)
+            if k:  # a separator close behind: break after it, so a name such as 事件A22 stays whole
+                n = k
+            elif text[n - 1].isascii() and text[n - 1].isalnum() and text[n].isascii() and text[n].isalnum() and " " in text[:n]:
                 n = text[:n].rindex(" ") + 1  # keep the word whole
             while 1 < n < len(text) and text[n] in CLOSING:
                 n -= 1
