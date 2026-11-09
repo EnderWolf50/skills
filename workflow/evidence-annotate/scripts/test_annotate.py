@@ -572,6 +572,40 @@ def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long(
             text.check_block(bad, "test")
 
 
+def test_wrap_breaks_between_characters_keeps_words_and_punctuation_and_cuts_past_max_lines():
+    m = lambda f, t: 10 * len(t)  # every character 10 px
+    item = lambda t: [{"text": t}, None, 10 * len(t)]
+    rows_of = lambda rows: [[q["text"] for q, _, _ in r] for _, r in rows]
+    assert rows_of(text.wrap([item("一二三四五六七八")], 50, 2, 0, m)) == [["一二三四五"], ["六七八"]]
+    assert rows_of(text.wrap([item("一二三四，五六")], 40, 3, 0, m)) == [["一二三"], ["四，五六"]]  # no row starts with ，
+    assert rows_of(text.wrap([item("open the door now")], 120, 3, 0, m)) == [["open the"], ["door now"]]  # door kept whole
+    one = rows_of(text.wrap([item("一二三四五六七八九十")], 50, 1, 0, m))
+    assert one == [["一二三四…"]]  # one row: cut to fit, with an ellipsis
+    two = rows_of(text.wrap([item("一二三四五六七八九十一二三四五")], 50, 2, 0, m))
+    assert two == [["一二三四五"], ["六七八九…"]]
+    hang = text.wrap([item("• "), item("一二三四五六")], 50, 2, 0, m, indent=20)
+    assert rows_of(hang) == [["• ", "一二三"], ["四五六"]] and hang[1][0] == 20  # the next row hangs under the text
+
+
+def test_blocks_in_one_row_make_way_left_for_centre_and_right():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    b = lambda **k: text.check_block(k, "test")
+    long, mid, right = b(at="top-left", lines=["x" * 300]), b(at="top", lines=["centre"]), b(at="top-right", lines=["right"])
+    at = p.blocks(Image.new("RGBA", (1280, 720)), [long, mid, right], 0, {})
+    (lx, _, lw, _), (mx, _, mw, _), (rx, _, _, _) = at[id(long)], at[id(mid)], at[id(right)]
+    assert lx + lw <= mx - text.SIDE_GAP + 1 and mx + mw <= rx  # the long one stops short of the centre one
+    wide, r2 = b(at="top", lines=["y" * 200]), b(at="top-right", lines=["right side"])
+    at = p.blocks(Image.new("RGBA", (1280, 720)), [wide, r2], 0, {})
+    assert at[id(wide)][0] + at[id(wide)][2] <= at[id(r2)][0]  # a centre block makes way for a right one
+    cut, wrapped = b(at="bottom-left", lines=["x" * 300]), b(at="bottom-left", lines=["x" * 300], max_lines=3)
+    h_cut = p.blocks(Image.new("RGBA", (1280, 720)), [cut, b(at="bottom", lines=["c"])], 0, {})[id(cut)][3]
+    h_wrap = p.blocks(Image.new("RGBA", (1280, 720)), [wrapped, b(at="bottom", lines=["c"])], 0, {})[id(wrapped)][3]
+    assert h_wrap > 2 * h_cut  # with max_lines it wraps into rows instead of one cut row
+    with pytest.raises(SystemExit):
+        text.check_block({"max_lines": 0}, "test")
+
+
 def test_a_cover_fills_its_rect_on_the_recording_through_the_zoom():
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT)

@@ -21,7 +21,7 @@ TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins
 ANCHORS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size": 13, "weight": 500, "lines": [],
          "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "radius": None,
-         "pad": None, "margin": 10, "max_w": None, "rect": None, "read": True}  # a block's keys and defaults
+         "pad": None, "margin": 10, "max_w": None, "max_lines": 1, "rect": None, "read": True}  # a block's keys and defaults
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner
 PART_KEYS = {"text", "color", "bold", "size", "dot", "rule"}
@@ -30,6 +30,7 @@ LINE_H = 1.45  # line pitch, times the block's size
 ROW_GAP = 4  # px at 1280 wide between blocks stacked at one anchor
 SIDE_GAP = 6  # px at 1280 wide between blocks side by side (beside)
 BULLET = (174, 180, 188, 255)
+CLOSING = set("，。、；：！？）」』》〉】,.;:!?)]}…%")  # never the first character of a wrapped row
 
 
 def key_items(events, offset=0.0):
@@ -153,6 +154,8 @@ def check_block(b, where):
     for k in ("max_w", "radius"):
         if blk[k] is not None and (not isinstance(blk[k], (int, float)) or blk[k] < 0):
             sys.exit(f"{where}: {k} must be a number of px, got {blk[k]!r}")
+    if not isinstance(blk["max_lines"], int) or isinstance(blk["max_lines"], bool) or not 1 <= blk["max_lines"] <= 20:
+        sys.exit(f"{where}: max_lines must be a whole number from 1 to 20, got {blk['max_lines']!r}")
     for k, n in (("pad", 2), ("rect", 4)):
         v = blk[k]
         if v is not None and (not isinstance(v, list) or len(v) != n or not all(isinstance(x, (int, float)) for x in v)):
@@ -196,6 +199,76 @@ def expand(parts, tokens):
             p = {**p, "text": text}
         out.append(p)
     return out
+
+
+def anchor(at):
+    """An anchor's (row, side): top-left -> ("top", "left"), center -> ("middle", "center")."""
+    if "-" in at:
+        return tuple(at.split("-"))
+    return {"top": ("top", "center"), "bottom": ("bottom", "center"), "left": ("middle", "left"),
+            "right": ("middle", "right"), "center": ("middle", "center")}[at]
+
+
+def fit(text, room, measure):
+    """How many leading characters of text fit in room px."""
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        lo, hi = (mid, hi) if measure(text[:mid]) <= room else (lo, mid - 1)
+    return lo
+
+
+def wrap(items, room, max_lines, gap, measure, indent=0.0):
+    """A line's items ([part, font, width]) in rows no wider than room px: [(x, row)]. A text part that does not fit
+    breaks between characters, at a space when the break would split a word, never before closing punctuation; rows
+    after the first start at indent; past max_lines the rest is cut and the last row ends in an ellipsis.
+    measure(font, text) -> px."""
+    rows, row, x0, x, cut = [], [], 0.0, 0.0, False
+    queue = [list(it) for it in items]
+    while queue:
+        p, f, w = queue.pop(0)
+        lead = gap if row else 0
+        if x + lead + w <= room or "text" not in p:
+            row.append([p, f, w])
+            x += lead + w
+            continue
+        if len(rows) + 1 >= max_lines:  # the last row this line may take: the rest is cut
+            row.append([p, f, w])
+            cut = bool(queue)
+            break
+        text = p["text"]
+        n = fit(text, room - x - lead, lambda t: measure(f, t))
+        if 0 < n < len(text):
+            if text[n - 1].isascii() and text[n - 1].isalnum() and text[n].isascii() and text[n].isalnum() and " " in text[:n]:
+                n = text[:n].rindex(" ") + 1  # keep the word whole
+            while 1 < n < len(text) and text[n] in CLOSING:
+                n -= 1
+        if n == 0 and row:  # nothing more fits on this row: the part starts the next
+            rows.append((x0, row))
+            row, x0, x = [], indent, indent
+            queue.insert(0, [p, f, w])
+            continue
+        n = max(n, 1)
+        head, tail = text[:n].rstrip(), text[n:].lstrip()
+        row.append([{**p, "text": head}, f, measure(f, head)])
+        rows.append((x0, row))
+        row, x0, x = [], indent, indent
+        if tail:
+            queue.insert(0, [{**p, "text": tail}, f, measure(f, tail)])
+    if row or not rows:
+        rows.append((x0, row))
+    x0, row = rows[-1]
+    width = lambda r: sum(w for _, _, w in r) + gap * (len(r) - 1)
+    texts = [i for i, it in enumerate(row) if "text" in it[0]]
+    if texts and (cut or x0 + width(row) > room):  # the last row ends in an ellipsis, shortened until it fits
+        i = texts[-1]
+        p, f, _ = row[i]
+        text = p["text"].rstrip("…") + "…" if cut else p["text"]
+        row[i:] = [[{**p, "text": text}, f, measure(f, text)]]
+        while x0 + width(row) > room and row[i][0]["text"].rstrip("…"):
+            text = row[i][0]["text"].rstrip("…")[:-1].rstrip() + "…"
+            row[i] = [{**p, "text": text}, f, measure(f, text)]
+    return rows
 
 
 def block_text(blk):
@@ -245,44 +318,44 @@ class TextLayer(Canvas):
             d.text((X0 + 7 * s, ly + 11 * s), label, font=self.f_label, fill=(20, 20, 24, int(255 * alpha)), anchor="lm")
 
     # --- blocks
-    def block_image(self, blk, tokens, bg=True):
+    def block_image(self, blk, tokens, bg=True, width=None):
         """The block drawn at its size, its tokens filled in (cached per text), or None when it has nothing to show:
-        lines of parts left to right, `gap` apart, each line centred on its pitch; a dot, a hairline (rule) or text."""
+        lines of parts left to right, `gap` apart, each row centred on its pitch; a dot, a hairline (rule) or text.
+        A line wider than the block may be (max_w, or `width` px when it makes way for another) wraps to max_lines
+        rows (wrap), the last ending in an ellipsis when it still does not fit."""
         lines = [expand(line, tokens) for line in blk["lines"]]
         if blk["sep"]:
             lines = [[q for i, p in enumerate(line) for q in ([{"text": blk["sep"]}] if i else []) + [p]] for line in lines]
         lines = [line for line in lines if line] if any(lines) else []
         if not lines:
             return None
-        key = ("block", id(blk), repr(lines), bg)
+        key = ("block", id(blk), repr(lines), bg, width)
         if key in self.cache:
             return self.cache[key]
         s, size = self.s, blk["size"]
         padx, pady = [v * s for v in (blk["pad"] or (0.62 * size, 0.27 * size))]
         gap = blk["gap"] * s
-        room = (blk["max_w"] * s if blk["max_w"] else self.ow - 2 * blk["margin"] * s) - 2 * padx
+        outer = blk["max_w"] * s if blk["max_w"] else self.ow - 2 * blk["margin"] * s
+        room = min(outer, width or outer) - 2 * padx
         probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        laid = []  # per line: [(part, font, width)]
+        measure = lambda f, text: probe.textlength(text, font=f)
+        laid = []  # visual rows: (x, [[part, font, width], ...])
         for line in lines:
-            if blk["bullets"]:
-                line = [{"text": "•  ", "color": BULLET}] + line
-            row = []
+            items = [[{"text": "•  ", "color": BULLET}, self.tfont(size, blk["weight"]), 0]] if blk["bullets"] else []
             for p in line:
                 if "dot" in p:
-                    row.append([p, None, 0.57 * size * s])
+                    items.append([p, None, 0.57 * size * s])
                 elif p.get("rule"):
-                    row.append([p, None, max(1, round(2 / 28 * size * s))])
+                    items.append([p, None, max(1, round(2 / 28 * size * s))])
                 else:
-                    f = self.tfont(p.get("size", size), 700 if p.get("bold") else blk["weight"])
-                    row.append([p, f, probe.textlength(p["text"], font=f)])
-            width = lambda r: sum(w for _, _, w in r) + gap * (len(r) - 1)
-            while width(row) > room and row and "text" in row[-1][0] and row[-1][0]["text"].rstrip("…"):
-                p, f, _ = row[-1]  # too long: the last text part loses characters and ends in an ellipsis
-                text = p["text"].rstrip("…")[:-1].rstrip() + "…"
-                row[-1] = [{**p, "text": text}, f, probe.textlength(text, font=f)]
-            laid.append(row)
+                    items.append([p, self.tfont(p.get("size", size), 700 if p.get("bold") else blk["weight"]), 0])
+            for it in items:
+                if "text" in it[0]:
+                    it[2] = measure(it[1], it[0]["text"])
+            indent = items[0][2] + gap if blk["bullets"] else 0  # a bulleted line's later rows hang under its text
+            laid += wrap(items, room, blk["max_lines"], gap, measure, indent)
         pitch = LINE_H * size * s
-        w = round(2 * padx + max(sum(w for _, _, w in r) + gap * (len(r) - 1) for r in laid))
+        w = round(2 * padx + max(x0 + sum(w for _, _, w in r) + gap * (len(r) - 1) for x0, r in laid))
         h = round(2 * pady + size * s + pitch * (len(laid) - 1))
         im = Image.new("RGBA", (max(w, 1), max(h, 1)))
         r = blk["radius"] * s if blk["radius"] is not None else h / 2 if len(laid) == 1 else 6 * s
@@ -290,9 +363,9 @@ class TextLayer(Canvas):
             ImageDraw.Draw(im).rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(r, h / 2)), fill=blk["bg"])
         ink = Image.new("RGBA", im.size)  # drawn apart and composited: a translucent fill drawn straight onto the
         d = ImageDraw.Draw(ink)            # background would replace its pixels instead of blending
-        for i, row in enumerate(laid):
-            x, cy = padx, pady + size * s / 2 + pitch * i
-            for j, (p, f, pw) in enumerate(row):
+        for i, (x0, row) in enumerate(laid):
+            x, cy = padx + x0, pady + size * s / 2 + pitch * i
+            for p, f, pw in row:
                 if "dot" in p:
                     d.ellipse([x, cy - pw / 2, x + pw, cy + pw / 2], fill=p["dot"])
                 elif p.get("rule"):
@@ -311,9 +384,7 @@ class TextLayer(Canvas):
         for blk, im in items:
             by.setdefault(blk["at"], []).append((blk, im))
         for at, group in by.items():
-            v, hz = at.split("-") if "-" in at else {"top": ("top", "center"), "bottom": ("bottom", "center"),
-                                                     "left": ("middle", "left"), "right": ("middle", "right"),
-                                                     "center": ("middle", "center")}[at]
+            v, hz = anchor(at)
             rows = []
             for blk, im in group:
                 if blk["beside"] and rows:
@@ -337,23 +408,44 @@ class TextLayer(Canvas):
         return out
 
     def blocks(self, ov, blocks, t, tokens):
-        """Draw the blocks showing at t (all but covers) on the output overlay; returns {id(block): (x, y, w, h)}."""
-        shown = []
-        for blk in blocks:
-            if blk["rect"] or (a := block_alpha(blk, t)) is None or (im := self.block_image(blk, tokens)) is None:
-                continue
-            rise = 0
+        """Draw the blocks showing at t (all but covers) on the output overlay, each making way for the blocks it
+        would overlap (make_way); returns {id(block): (x, y, w, h)}."""
+        live = [(blk, a) for blk in blocks if not blk["rect"] and (a := block_alpha(blk, t)) is not None]
+        widths = {}
+        for _ in range(4):  # a narrower block may wrap taller and meet another: lay out again, a few times at most
+            shown = [(blk, im) for blk, _ in live if (im := self.block_image(blk, tokens, width=widths.get(id(blk)))) is not None]
+            at = self.place(shown)
+            boxes = {id(blk): (*at[id(blk)], im.width, im.height) for blk, im in shown}
+            if not self.make_way(shown, boxes, widths):
+                break
+        alpha = dict((id(blk), a) for blk, a in live)
+        for blk, im in shown:
+            a, rise = alpha[id(blk)], 0
             if blk.get("_rise"):  # a step caption: eases in and settles up, as it always has
                 a, rise = cap_in(a)
                 rise *= self.s * self.ck
-            shown.append((blk, im, a, rise))
-        at = self.place([(blk, im) for blk, im, _, _ in shown])
-        out = {}
-        for blk, im, a, rise in shown:
-            x, y = at[id(blk)]
+            x, y, _, _ = boxes[id(blk)]
             self.paste(ov, fade(im, a) if a < 1 else im, x, y + rise)
-            out[id(blk)] = (x, y, im.width, im.height)
-        return out
+        return boxes
+
+    def make_way(self, shown, boxes, widths):
+        """Narrow each block that overlaps one further right in the same row of anchors (top, middle, bottom): a
+        left block makes way for a centre or right one, a centre block for a right one, SIDE_GAP apart. Records the
+        new widths in `widths`; True when one changed."""
+        rank, changed, g = {"left": 0, "center": 1, "right": 2}, False, SIDE_GAP * self.s
+        for b1, _ in shown:
+            v1, h1 = anchor(b1["at"])
+            x1, y1, w1, hh1 = boxes[id(b1)]
+            for b2, _ in shown:
+                v2, h2 = anchor(b2["at"])
+                x2, y2, w2, hh2 = boxes[id(b2)]
+                if v1 != v2 or rank[h1] >= rank[h2] or not (x1 < x2 + w2 and x2 < x1 + w1 and y1 < y2 + hh2 and y2 < y1 + hh1):
+                    continue
+                room = x2 - g - x1 if h1 == "left" else 2 * (x2 - g - self.ow / 2)
+                room = max(room, 3 * b1["size"] * self.s)
+                if room < w1 - 0.5 and room < widths.get(id(b1), float("inf")):
+                    widths[id(b1)], changed = room, True
+        return changed
 
     def cover(self, ov, blk, t, tokens, space):
         """A block with a rect: a box over the recording there (through the zoom), its lines inside at the top left."""
