@@ -7,7 +7,7 @@ Text a project lays out itself, drawn in the skill's fonts and look: a header ov
  "blocks": [
   {"at": "top-left", "size": 17, "margin": 8, "bg": null,
    "lines": [[{"text": "T12", "bold": true, "color": "#d97757"}, "  依狀態查詢：只列出進行中的案件"]]},
-  {"from": "10:00:24", "to": "10:00:31", "at": "top-right", "margin": 0, "radius": 0, "bg": "#262b33", "bar": "#d97757",
+  {"from": "10:00:24", "to": "10:00:31", "at": "top-right", "margin": 0, "radius": 0, "bg": "#262b33",
    "lines": [[{"text": "tester-1", "color": "#aeb4bc"}],
              [{"text": "結果 ", "bold": true}, {"text": "PASS", "bold": true, "color": "#5bd07a"}, {"text": "  {speed}", "color": "#ffc040"}]]},
   {"from": "10:00:24", "to": "10:00:31", "at": "top-right", "radius": 0, "bg": "#262b33", "bullets": true,
@@ -25,5 +25,5 @@ Colours are `#rrggbb` or `#rrggbbaa`. Sizes and distances are px at 1280 wide an
   - `from`, `to`: the wall times it shows between (default the whole clip), fading in and out. With a `from` it counts as a caption for `--idle-speed`, held while it is read, unless `read` is `false`.
   - `at`: where on the output frame, bands included: `top-left`, `top`, `top-right`, `left`, `center`, `right`, `bottom-left` (default), `bottom`, `bottom-right`. Blocks showing at one anchor stack away from its edge in list order, 4 px apart, the anchor's first block `margin` (default 10) off the edges; `beside: true` puts a block beside the one before it instead. The corner block ([`STYLE.md`](STYLE.md) `corner`) comes first at its anchor, a pill or chapter step caption next.
   - `lines`: each a string, or a list of parts. A part is a string, `{"text", "color"?, "bold"?, "size"?}`, `{"dot": colour}` or `{"rule": true}` (a hairline); parts sit `gap` px apart, with `sep` between them. `{clock}`, `{step}` (the step's `tag`, else 步驟 n/N) and `{speed}` (快轉 N× while an idle stretch plays fast) are filled in each frame; a part its tokens leave empty is dropped with its `sep`.
-  - Look: `size` (13), `weight` (500; a `bold` part 700), `color` (`#e6e6e6`), `bullets`, `bg` (`#0000008c`; `null` for none), `bar` (a 3 px strip down the left edge), `radius` (a pill for one line, else 6), `pad` (`[x, y]`), `max_w` (a longer line ends in …; default the frame's width).
+  - Look: `size` (13), `weight` (500; a `bold` part 700), `color` (`#e6e6e6`), `bullets`, `bg` (`#0000008c`; `null` for none), `radius` (a pill for one line, else 6), `pad` (`[x, y]`), `max_w` (a longer line ends in …; default the frame's width).
   - `rect`: `[x, y, w, h]` in `space`. The block becomes a box over the recording there, under every other mark and through the zoom, its lines inside: a cover for on-screen text the video should not show, such as captions a test page drew. Private data goes in `masks.json`, which scans for it.

@@ -20,7 +20,7 @@ TYPE_MS = 45  # a `type` event reveals one character this often unless it gives 
 TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins the same pill
 ANCHORS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size": 13, "weight": 500, "lines": [],
-         "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "bar": None, "radius": None,
+         "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "radius": None,
          "pad": None, "margin": 10, "max_w": None, "rect": None, "read": True}  # a block's keys and defaults
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner
@@ -142,7 +142,7 @@ def check_block(b, where):
             blk[k] = None if blk[k] is None else blk[k] if isinstance(blk[k], float) else hms(str(blk[k]))
         except ValueError:
             sys.exit(f"{where}: {k} must be HH:MM:SS.fff, got {blk[k]!r}")
-    for k in ("color", "bg", "bar"):
+    for k in ("color", "bg"):
         if blk[k] is not None and not isinstance(blk[k], tuple):
             blk[k] = rgba(blk[k])
             if blk[k] is None:
@@ -259,8 +259,8 @@ class TextLayer(Canvas):
             return self.cache[key]
         s, size = self.s, blk["size"]
         padx, pady = [v * s for v in (blk["pad"] or (0.62 * size, 0.27 * size))]
-        gap, bar = blk["gap"] * s, (3 * s if blk["bar"] and bg else 0)
-        room = (blk["max_w"] * s if blk["max_w"] else self.ow - 2 * blk["margin"] * s) - 2 * padx - bar
+        gap = blk["gap"] * s
+        room = (blk["max_w"] * s if blk["max_w"] else self.ow - 2 * blk["margin"] * s) - 2 * padx
         probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         laid = []  # per line: [(part, font, width)]
         for line in lines:
@@ -282,21 +282,16 @@ class TextLayer(Canvas):
                 row[-1] = [{**p, "text": text}, f, probe.textlength(text, font=f)]
             laid.append(row)
         pitch = LINE_H * size * s
-        w = round(2 * padx + bar + max(sum(w for _, _, w in r) + gap * (len(r) - 1) for r in laid))
+        w = round(2 * padx + max(sum(w for _, _, w in r) + gap * (len(r) - 1) for r in laid))
         h = round(2 * pady + size * s + pitch * (len(laid) - 1))
         im = Image.new("RGBA", (max(w, 1), max(h, 1)))
         r = blk["radius"] * s if blk["radius"] is not None else h / 2 if len(laid) == 1 else 6 * s
         if bg and blk["bg"]:
             ImageDraw.Draw(im).rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(r, h / 2)), fill=blk["bg"])
-        if bar:
-            mask = Image.new("L", im.size)
-            ImageDraw.Draw(mask).rounded_rectangle([0, 0, w - 1, h - 1], radius=round(min(r, h / 2)), fill=255)
-            mask.paste(0, (round(bar), 0, w, h))
-            im.paste(blk["bar"], (0, 0), mask)
         ink = Image.new("RGBA", im.size)  # drawn apart and composited: a translucent fill drawn straight onto the
         d = ImageDraw.Draw(ink)            # background would replace its pixels instead of blending
         for i, row in enumerate(laid):
-            x, cy = padx + bar, pady + size * s / 2 + pitch * i
+            x, cy = padx, pady + size * s / 2 + pitch * i
             for j, (p, f, pw) in enumerate(row):
                 if "dot" in p:
                     d.ellipse([x, cy - pw / 2, x + pw, cy + pw / 2], fill=p["dot"])

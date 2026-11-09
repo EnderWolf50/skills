@@ -565,9 +565,9 @@ def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long(
     long = text.check_block({"lines": ["x" * 400], "max_w": 200}, "test")
     assert p.block_image(long, {}).width <= 200 + 1
     fact = text.check_block({"lines": [[{"text": "排序：", "color": "#aeb4bc"}, {"text": "true", "color": "#5bd07a", "bold": True}]],
-                             "bullets": True, "bar": "#d97757"}, "test")
+                             "bullets": True}, "test")
     assert p.block_image(fact, {}) is not None
-    for bad in ({"at": "middle"}, {"colour": "#fff"}, {"bg": "black"}, {"rect": [0, 0, 0, 5]}, {"lines": [[{"txt": "x"}]]}):
+    for bad in ({"at": "middle"}, {"colour": "#fff"}, {"bar": "#d97757"}, {"bg": "black"}, {"rect": [0, 0, 0, 5]}, {"lines": [[{"txt": "x"}]]}):
         with pytest.raises(SystemExit):
             text.check_block(bad, "test")
 
