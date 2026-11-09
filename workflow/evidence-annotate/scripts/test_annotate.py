@@ -14,6 +14,9 @@ import numpy as np
 import pytest
 
 import annotate as a
+import common
+import pointer
+import text
 
 SPACE = (1280, 720)
 # geometry tests draw no CJK text, so any font will do where no CJK font is installed
@@ -25,71 +28,71 @@ def ev(t, kind, x=None, y=None, **kw):
 
 
 def test_tap_is_a_short_tap():
-    (g,) = a.gestures([ev("14:30:14.710", "tap", 1108, 494)])
-    assert g["kind"] == "tap" and g["pts"] == [(a.hms("14:30:14.710"), 1108, 494)]
+    (g,) = pointer.gestures([ev("14:30:14.710", "tap", 1108, 494)])
+    assert g["kind"] == "tap" and g["pts"] == [(common.hms("14:30:14.710"), 1108, 494)]
     assert g["t1"] - g["t0"] == pytest.approx(0.05)
 
 
 def test_swipe_runs_start_to_end_over_ms_and_is_a_drag():
-    (g,) = a.gestures([ev("14:30:50.340", "swipe", 444, 330, x2=444, y2=650, ms=600)])
+    (g,) = pointer.gestures([ev("14:30:50.340", "swipe", 444, 330, x2=444, y2=650, ms=600)])
     assert g["kind"] == "drag"
     assert [p[1:] for p in g["pts"]] == [(444, 330), (444, 650)]
     assert g["t1"] - g["t0"] == pytest.approx(0.6)
 
 
 def test_down_up_without_movement_is_tap_then_hold_by_duration():
-    short = a.gestures([ev("10:00:00.000", "down", 300, 300), ev("10:00:00.200", "up")])
-    long = a.gestures([ev("10:00:00.000", "down", 300, 300), ev("10:00:01.500", "up")])
+    short = pointer.gestures([ev("10:00:00.000", "down", 300, 300), ev("10:00:00.200", "up")])
+    long = pointer.gestures([ev("10:00:00.000", "down", 300, 300), ev("10:00:01.500", "up")])
     assert short[0]["kind"] == "tap" and long[0]["kind"] == "hold"
 
 
 def test_up_with_a_point_makes_a_drag_ending_there():
-    (g,) = a.gestures([ev("10:00:00.000", "down", 852, 391), ev("10:00:00.900", "up", 600, 400)])
+    (g,) = pointer.gestures([ev("10:00:00.000", "down", 852, 391), ev("10:00:00.900", "up", 600, 400)])
     assert g["kind"] == "drag" and g["pts"][-1][1:] == (600, 400)
-    assert g["t1"] == pytest.approx(a.hms("10:00:00.900"))
+    assert g["t1"] == pytest.approx(common.hms("10:00:00.900"))
 
 
 def test_events_are_sorted_and_offset_shifts_every_time():
-    gs = a.shift(a.gestures([ev("10:00:02.0", "tap", 1, 1), ev("10:00:01.0", "tap", 2, 2)]), 0.5)
+    gs = pointer.shift(pointer.gestures([ev("10:00:02.0", "tap", 1, 1), ev("10:00:01.0", "tap", 2, 2)]), 0.5)
     assert [g["pts"][0][1] for g in gs] == [2, 1]
-    assert gs[0]["t0"] == pytest.approx(a.hms("10:00:01.5")) and gs[0]["pts"][0][0] == gs[0]["t0"]
+    assert gs[0]["t0"] == pytest.approx(common.hms("10:00:01.5")) and gs[0]["pts"][0][0] == gs[0]["t0"]
 
 
 def test_unknown_kind_is_an_error():
     with pytest.raises(ValueError):
-        a.gestures([ev("10:00:00", "wiggle", 1, 1)])
+        pointer.gestures([ev("10:00:00", "wiggle", 1, 1)])
 
 
 def test_stray_up_and_two_finger_sequence_do_not_raise():
-    assert a.gestures([ev("10:00:00.0", "up")]) == []
-    gs = a.gestures([ev("10:00:00.0", "down", 10, 10), ev("10:00:00.1", "down", 50, 50),
+    assert pointer.gestures([ev("10:00:00.0", "up")]) == []
+    gs = pointer.gestures([ev("10:00:00.0", "down", 10, 10), ev("10:00:00.1", "down", 50, 50),
                      ev("10:00:00.2", "up"), ev("10:00:00.3", "up")])  # last `up` has nothing held
-    assert len(gs) == 2 and gs[0]["t1"] == pytest.approx(a.hms("10:00:00.1"))
+    assert len(gs) == 2 and gs[0]["t1"] == pytest.approx(common.hms("10:00:00.1"))
 
 
 def test_events_missing_coordinates_name_the_gap():
     with pytest.raises(ValueError, match="x2"):
-        a.gestures([ev("10:00:00", "swipe", 1, 1, y2=5)])
+        pointer.gestures([ev("10:00:00", "swipe", 1, 1, y2=5)])
     with pytest.raises(ValueError, match="tap"):
-        a.gestures([{"t": "10:00:00", "kind": "tap"}])
+        pointer.gestures([{"t": "10:00:00", "kind": "tap"}])
     with pytest.raises(ValueError, match="move .* lacks y"):
-        a.gestures([{"t": "10:00:00", "kind": "move", "x": 1}])
+        pointer.gestures([{"t": "10:00:00", "kind": "move", "x": 1}])
 
 
 def test_a_move_while_pressed_is_a_point_of_the_drag():
-    (g,) = a.gestures([ev("10:00:01.0", "down", 100, 100), ev("10:00:01.2", "move", 300, 120), ev("10:00:01.5", "up")])
+    (g,) = pointer.gestures([ev("10:00:01.0", "down", 100, 100), ev("10:00:01.2", "move", 300, 120), ev("10:00:01.5", "up")])
     assert g["kind"] == "drag" and g["pts"][-1][1:] == (300, 120)
 
 
 def test_fmt_rounds_without_printing_sixty_seconds():
-    assert a.fmt(a.hms("14:30:59.97")) == "14:31:00.0"
-    assert a.fmt(a.hms("14:30:41.2")) == "14:30:41.2"
-    assert a.fmt(a.hms("14:30:59.9996"), 3) == "14:31:00.000"
-    assert a.fmt(86399.99) == "00:00:00.0"
+    assert common.fmt(common.hms("14:30:59.97")) == "14:31:00.0"
+    assert common.fmt(common.hms("14:30:41.2")) == "14:30:41.2"
+    assert common.fmt(common.hms("14:30:59.9996"), 3) == "14:31:00.000"
+    assert common.fmt(86399.99) == "00:00:00.0"
 
 
 def test_frame_indices_pick_nearest_frame_and_warn_outside_the_cut(capsys):
-    start, ss = a.hms("10:00:00"), 2.0  # clip starts 2 s in, 300 frames at 30 fps
+    start, ss = common.hms("10:00:00"), 2.0  # clip starts 2 s in, 300 frames at 30 fps
     assert a.frame_indices(["10:00:03.0", "10:00:02.0"], start, ss, 30, 300) == {30, 0}
     assert a.frame_indices(["10:00:01.0", "10:00:12.0"], start, ss, 30, 300) == set()  # before the cut, and past its end
     assert capsys.readouterr().err.count("outside the cut") == 2
@@ -98,7 +101,7 @@ def test_frame_indices_pick_nearest_frame_and_warn_outside_the_cut(capsys):
 def test_zoom_region_must_have_area(tmp_path):
     (tmp_path / "s.json").write_text(json.dumps([{"from": "10:00:00", "to": "10:00:05", "title": "t", "zoom": [0, 0, 100, 0]}]))
     with pytest.raises(SystemExit):
-        a.load_steps(tmp_path / "s.json")
+        text.load_steps(tmp_path / "s.json")
 
 
 def test_zoom_frame_crops_scales_back_and_clamps_at_the_edges():
@@ -118,16 +121,16 @@ def test_coordinates_map_by_frame_size_per_axis():
 
 def test_step_at_covers_from_inclusive_to_exclusive_with_fade():
     steps = [{"from": 10.0, "to": 20.0}, {"from": 20.0, "to": 30.0}]
-    assert a.step_at(steps, 9.9) is None
-    i, _, alpha = a.step_at(steps, 10.0)
+    assert text.step_at(steps, 9.9) is None
+    i, _, alpha = text.step_at(steps, 10.0)
     assert i == 0 and alpha == 0
-    assert a.step_at(steps, 15.0)[2] == 1
-    assert a.step_at(steps, 20.0)[0] == 1
-    assert a.step_at(steps, 19.9)[2] == pytest.approx(0.1 / a.FADE_S)
+    assert text.step_at(steps, 15.0)[2] == 1
+    assert text.step_at(steps, 20.0)[0] == 1
+    assert text.step_at(steps, 19.9)[2] == pytest.approx(0.1 / text.FADE_S)
 
 
 def test_ease_is_clamped_smoothstep():
-    assert (a.ease(-1), a.ease(0), a.ease(0.5), a.ease(1), a.ease(2)) == (0, 0, 0.5, 1, 1)
+    assert (common.ease(-1), common.ease(0), common.ease(0.5), common.ease(1), common.ease(2)) == (0, 0, 0.5, 1, 1)
 
 
 def test_fit_region_matches_aspect_keeps_centre_and_stays_inside():
@@ -216,7 +219,7 @@ def test_load_masks_rejects_empty_boxes_and_a_text_space(tmp_path):
 
 
 def test_clip_bounds_refuses_a_cut_before_start():
-    start = a.hms("14:30:00")
+    start = common.hms("14:30:00")
     assert a.clip_bounds(start, None, None, 60.0) == (0.0, 60.0)
     ss, dur = a.clip_bounds(start, "14:30:10", "14:30:25", 60.0)
     assert (ss, dur) == (pytest.approx(10), pytest.approx(15))
@@ -232,64 +235,64 @@ if __name__ == "__main__":
 
 
 def track(gs, **style):
-    return a.Track(gs, a.load_style({"style": style}), lambda x, y: (x, y))
+    return pointer.Track(gs, a.load_style({"style": style}), lambda x, y: (x, y))
 
 
 def test_track_rests_then_glides_to_arrive_on_the_next_press():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:05.0", "tap", 500, 300)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:05.0", "tap", 500, 300)])
     tr = track(gs, cursor="cua")
     start, _, traj, _ = tr.glides[0]
     t1 = gs[1]["t0"]
     assert start == pytest.approx(t1 - traj.arrival)  # the move ends as the press starts
     assert tr.at(gs[0]["t0"] - 1)[:2] == (100, 100)  # before the first gesture: waits on it
-    assert tr.at(start - 0.1)[:3] == (100, 100, a.cm.REST_HEADING)  # rests until the glide starts
+    assert tr.at(start - 0.1)[:3] == (100, 100, pointer.cm.REST_HEADING)  # rests until the glide starts
     x, y, h, *_ = tr.at(start + traj.arrival / 2)
-    assert 100 < x < 500 and h != a.cm.REST_HEADING  # leans into the move
+    assert 100 < x < 500 and h != pointer.cm.REST_HEADING  # leans into the move
     assert tr.at(t1)[:2] == pytest.approx((500, 300), abs=1)
-    assert tr.at(t1 + 9)[:3] == (500, 300, a.cm.REST_HEADING)
+    assert tr.at(t1 + 9)[:3] == (500, 300, pointer.cm.REST_HEADING)
 
 
 def test_a_move_is_a_point_the_pointer_glides_to_without_pressing():
-    items = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:03.0", "move", 600, 300), ev("10:00:06.0", "tap", 900, 500)])
-    assert [g["kind"] for g in items] == ["tap", "move", "tap"] and len(a.presses(items)) == 2
+    items = pointer.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:03.0", "move", 600, 300), ev("10:00:06.0", "tap", 900, 500)])
+    assert [g["kind"] for g in items] == ["tap", "move", "tap"] and len(pointer.presses(items)) == 2
     tr = track(items)
-    t = a.hms("10:00:03.0")
+    t = common.hms("10:00:03.0")
     start, _, traj, _ = tr.glides[0]
     assert start == pytest.approx(t - traj.arrival)  # arrives as the move happens
     assert tr.at(t + 2)[:2] == pytest.approx((600, 300), abs=1)  # and rests there until the next glide
-    assert a.press_k(a.presses(items), t) == 1  # a move does not press
+    assert pointer.press_k(pointer.presses(items), t) == 1  # a move does not press
 
 
 def test_moves_alone_draw_the_pointer():
     from PIL import Image
-    items = a.gestures([ev("10:00:01.0", "move", 640, 360)])
+    items = pointer.gestures([ev("10:00:01.0", "move", 640, 360)])
     p = a.Painter(1280, 720, SPACE, FONT)
     ov = Image.new("RGBA", (1280, 720))
-    p.cursor(ov, p.track(items), a.presses(items), a.hms("10:00:02.0"))
+    p.cursor(ov, p.track(items), pointer.presses(items), common.hms("10:00:02.0"))
     assert ov.getpixel((642, 364))[3] > 200  # the arrow rests with its tip on the point
 
 
 def test_track_squeezes_a_glide_into_a_short_gap_and_skips_none():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:01.3", "tap", 900, 600)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:01.3", "tap", 900, 600)])
     start, g, traj, _ = track(gs).glides[0]
     assert traj.arrival == pytest.approx(gs[1]["t0"] - gs[0]["t1"]) and start == pytest.approx(gs[0]["t1"])
 
 
 def test_press_scale_shrinks_before_the_press_and_recovers_after_the_release():
-    g = a.gestures([ev("10:00:01.0", "tap", 1, 1)])
+    g = pointer.gestures([ev("10:00:01.0", "tap", 1, 1)])
     t0, t1 = g[0]["t0"], g[0]["t1"]
-    assert a.press_k(g, t0 - a.PRESS_S - 0.01) == 1
-    assert a.press_k(g, t0) == pytest.approx(a.PRESS_K)
-    assert a.press_k(g, t1 + a.RELEASE_S * 0.6) > 1  # springs a little past full size
-    assert a.press_k(g, t1 + a.RELEASE_S + 0.01) == 1
-    quick = a.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:01.1", "tap", 1, 1)])
-    assert min(a.press_k(quick, quick[0]["t0"] + k / 300) for k in range(300)) >= a.PRESS_K - 1e-9  # a rebound and a press never stack
+    assert pointer.press_k(g, t0 - pointer.PRESS_S - 0.01) == 1
+    assert pointer.press_k(g, t0) == pytest.approx(pointer.PRESS_K)
+    assert pointer.press_k(g, t1 + pointer.RELEASE_S * 0.6) > 1  # springs a little past full size
+    assert pointer.press_k(g, t1 + pointer.RELEASE_S + 0.01) == 1
+    quick = pointer.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:01.1", "tap", 1, 1)])
+    assert min(pointer.press_k(quick, quick[0]["t0"] + k / 300) for k in range(300)) >= pointer.PRESS_K - 1e-9  # a rebound and a press never stack
 
 
 def test_ring_shows_only_after_the_press():
     p = a.Painter(1280, 720, SPACE, FONT)
     from PIL import Image
-    for age, drawn in ((-0.05, False), (0.1, True), (a.RING_S + 0.05, False)):
+    for age, drawn in ((-0.05, False), (0.1, True), (pointer.RING_S + 0.05, False)):
         ov = Image.new("RGBA", (1280, 720))
         p.ring(ov, 640, 360, age)
         assert (ov.getbbox() is not None) == drawn, age
@@ -297,22 +300,22 @@ def test_ring_shows_only_after_the_press():
 
 def test_ring_starts_at_half_size_and_stays_clear_until_near_its_end():
     from PIL import Image
-    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": a.MARK_SIZE}}))
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": pointer.MARK_SIZE}}))
     def drawn(age):
         ov = Image.new("RGBA", (1280, 720))
         p.ring(ov, 640, 360, age)
         x0, _, x1, _ = ov.getbbox()
         return x1 - x0, int(np.asarray(ov)[:, :, 3].max())
     width, _ = drawn(0.01)
-    assert width == pytest.approx(a.RING_R, rel=0.15)  # half of its full radius: a diameter of RING_R
-    _, alpha = drawn(0.7 * a.RING_S)
+    assert width == pytest.approx(pointer.RING_R, rel=0.15)  # half of its full radius: a diameter of RING_R
+    _, alpha = drawn(0.7 * pointer.RING_S)
     assert alpha > 140  # still a clear ring late in its run
 
 
 def test_mouse_pointer_sprite_is_drawn_tip_first_and_clipped_at_the_edge():
     p = a.Painter(1280, 720, SPACE, FONT)
     from PIL import Image
-    gs = a.gestures([ev("10:00:01.0", "tap", 1270, 710)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 1270, 710)])
     ov = Image.new("RGBA", (1280, 720))
     p.cursor(ov, p.track(gs), gs, gs[0]["t0"])  # near the corner: must not raise
     assert ov.getpixel((1271, 713))[3] > 200  # the tip sits on the press
@@ -321,51 +324,51 @@ def test_mouse_pointer_sprite_is_drawn_tip_first_and_clipped_at_the_edge():
 
 
 def test_glide_bows_unless_arc_is_zero_and_leans_unless_tilt_is_zero():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 900, 300)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 900, 300)])
     def mid(**style):
         tr = track(gs, **{"cursor": "cua", **style})
         start, _, traj, _ = tr.glides[0]
         return tr.at(start + traj.arrival / 2)
     assert abs(mid()[1] - 300) > 30
-    assert mid(cursor="mac")[2] == a.cm.REST_HEADING  # the mac arrow stays upright by default
+    assert mid(cursor="mac")[2] == pointer.cm.REST_HEADING  # the mac arrow stays upright by default
     assert abs(mid(cursor="mac")[1] - 300) < abs(mid()[1] - 300)  # and bows less
     assert mid(arc=0)[1] == pytest.approx(300)
-    assert mid(tilt=0)[2] == a.cm.REST_HEADING
+    assert mid(tilt=0)[2] == pointer.cm.REST_HEADING
 
 
 def test_aim_mirrors_the_arrow_toward_a_target_on_its_right_and_back():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:04.0", "tap", 900, 300), ev("10:00:07.0", "tap", 300, 300)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:04.0", "tap", 900, 300), ev("10:00:07.0", "tap", 300, 300)])
     tr = track(gs, tilt="aim")
-    mirror = a.AIM_TURN
-    t = lambda s: a.hms(s)
+    mirror = pointer.AIM_TURN
+    t = lambda s: common.hms(s)
     assert tr.aim(t("10:00:02.0")) == 0  # target to the left of nothing yet: the usual arrow
     peak = max(tr.aim(t("10:00:03.0") + k / 60) for k in range(120))
     assert tr.aim(t("10:00:06.0")) == pytest.approx(mirror, abs=0.01) and peak > mirror * 1.1  # overshoots, settles
     assert tr.aim(t("10:00:09.5")) == pytest.approx(0, abs=0.01)  # the next target lies left: back
-    assert tr.at(t("10:00:03.5"))[2] == a.cm.REST_HEADING  # the glide itself does not lean
+    assert tr.at(t("10:00:03.5"))[2] == pointer.cm.REST_HEADING  # the glide itself does not lean
 
 
 def test_aim_reversing_mid_swing_starts_from_where_the_arrow_is():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:01.4", "tap", 900, 300), ev("10:00:01.8", "tap", 300, 300)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:01.4", "tap", 900, 300), ev("10:00:01.8", "tap", 300, 300)])
     tr = track(gs, tilt="aim")
-    ts = [a.hms("10:00:01.0") + k / 240 for k in range(600)]
+    ts = [common.hms("10:00:01.0") + k / 240 for k in range(600)]
     assert max(abs(tr.aim(u) - tr.aim(v)) for u, v in zip(ts, ts[1:])) < 0.05  # no jump between frames
 
 
 def test_lean_grows_with_speed():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 1100, 300)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 300), ev("10:00:05.0", "tap", 1100, 300)])
     tr = track(gs, cursor="cua")
     start, _, traj, _ = tr.glides[0]
-    turns = [abs(a.lean(traj, u, traj.sample_at(u)[3])) for u in (0.02, traj.arrival / 2)]
+    turns = [abs(pointer.lean(traj, u, traj.sample_at(u)[3])) for u in (0.02, traj.arrival / 2)]
     assert turns[0] < 0.1 * turns[1] and turns[1] > 0.3  # barely turned while starting, leaning at full speed
-    assert a.lean(None, 0, a.cm.REST_HEADING) == 0
+    assert pointer.lean(None, 0, pointer.cm.REST_HEADING) == 0
 
 
 def test_float_waits_for_the_first_move():
     from PIL import Image
-    gs = a.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.0", "tap", 500, 300)])
+    gs = pointer.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.0", "tap", 500, 300)])
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"float": True}}))
-    p.cursor(Image.new("RGBA", (1280, 720)), track(gs, float=True), gs, a.hms("10:00:00.5"))  # raised on NaN before
+    p.cursor(Image.new("RGBA", (1280, 720)), track(gs, float=True), gs, common.hms("10:00:00.5"))  # raised on NaN before
 
 
 def test_style_fills_defaults_and_rejects_bad_values():
@@ -387,39 +390,39 @@ def test_preset_sets_the_look_and_style_overrides_it():
     with pytest.raises(SystemExit):
         a.load_style({}, "fancy")
 
-@pytest.mark.parametrize("cursor", a.CURSORS)
+@pytest.mark.parametrize("cursor", pointer.CURSORS)
 def test_every_cursor_draws_its_tip_on_the_point_with_a_label(cursor):
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": cursor, "label": "Claude"}}))
-    gs = a.gestures([ev("10:00:01.0", "tap", 640, 360)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 640, 360)])
     ov = Image.new("RGBA", (1280, 720))
     p.cursor(ov, p.track(gs), gs, gs[0]["t0"])
     assert ov.getpixel((643, 366) if cursor != "cua" else (646, 364))[3] > 200  # the pointer covers the press point
-    (tx, ty), k = a.TAG[cursor]["at"], a.STYLE["size"]
+    (tx, ty), k = pointer.TAG[cursor]["at"], a.STYLE["size"]
     assert ov.getpixel((round(640 + tx * k + 8), round(360 + ty * k + 8)))[3] > 200  # the tag sits below right of the tip
 
 
 def test_key_items_make_caps_and_join_close_typing():
-    items = a.key_items([ev("10:00:01.0", "type", text="AB", ms=100), ev("10:00:01.5", "type", text="C"),
+    items = text.key_items([ev("10:00:01.0", "type", text="AB", ms=100), ev("10:00:01.5", "type", text="C"),
                          ev("10:00:05.0", "key", keys="Ctrl + S"), ev("10:00:09.0", "type", text="Z"),
                          ev("10:00:00.5", "tap", 1, 1)])
     assert len(items) == 3  # AB and C joined; the key; Z after a gap
-    assert "".join(ch for _, ch in items[0]["chars"]) == "ABC" and items[0]["chars"][1][0] == pytest.approx(a.hms("10:00:01.05"))
+    assert "".join(ch for _, ch in items[0]["chars"]) == "ABC" and items[0]["chars"][1][0] == pytest.approx(common.hms("10:00:01.05"))
     assert items[1]["caps"] == ["Ctrl", "S"]
-    item, alpha = a.key_at(items, a.hms("10:00:05.5"))
+    item, alpha = text.key_at(items, common.hms("10:00:05.5"))
     assert item is items[1] and alpha == 1
-    assert a.key_at(items, a.hms("10:00:07.0")) is None
+    assert text.key_at(items, common.hms("10:00:07.0")) is None
     with pytest.raises(ValueError):
-        a.key_items([ev("10:00:01.0", "key")])
+        text.key_items([ev("10:00:01.0", "key")])
 
 
 def test_gestures_skip_key_events():
-    assert len(a.gestures([ev("10:00:01.0", "key", keys="Enter"), ev("10:00:02.0", "tap", 1, 1)])) == 1
+    assert len(pointer.gestures([ev("10:00:01.0", "key", keys="Enter"), ev("10:00:02.0", "tap", 1, 1)])) == 1
 
 
 def test_camera_holds_one_zoom_over_nearby_presses_and_stays_wide_for_spread_ones():
-    t = lambda s: a.hms(s)
-    gs = a.gestures([ev("10:00:02.0", "tap", 200, 200), ev("10:00:03.0", "tap", 300, 260),
+    t = lambda s: common.hms(s)
+    gs = pointer.gestures([ev("10:00:02.0", "tap", 200, 200), ev("10:00:03.0", "tap", 300, 260),
                      ev("10:00:04.0", "tap", 260, 300), ev("10:00:20.0", "tap", 100, 100), ev("10:00:21.0", "tap", 1180, 620)])
     cam = a.Camera(gs, [], SPACE, 1.5)
     assert cam.region(t("10:00:00.5")) is None
@@ -431,61 +434,61 @@ def test_camera_holds_one_zoom_over_nearby_presses_and_stays_wide_for_spread_one
 
 
 def test_camera_stays_wide_for_scattered_presses_in_a_busy_run():
-    t = lambda s: a.hms(s)
-    gs = a.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.2", "tap", 1180, 620),
+    t = lambda s: common.hms(s)
+    gs = pointer.gestures([ev("10:00:02.0", "tap", 100, 100), ev("10:00:04.2", "tap", 1180, 620),
                      ev("10:00:06.4", "tap", 100, 620), ev("10:00:08.6", "tap", 1180, 100)])
     cam = a.Camera(gs, [], SPACE, 1.5)
     assert all(cam.region(t(f"10:00:{s:04.1f}")) is None for s in (1.5, 2.0, 3.0, 4.2, 6.4, 8.6, 9.5))
 
 
 def test_camera_fits_a_long_drag_and_restarts_when_time_goes_back():
-    gs = a.gestures([ev("10:00:02.0", "swipe", 300, 360, x2=900, y2=360, ms=500)])
+    gs = pointer.gestures([ev("10:00:02.0", "swipe", 300, 360, x2=900, y2=360, ms=500)])
     cam = a.Camera(gs, [], SPACE, 2.5)
-    _, _, w, _ = cam.region(a.hms("10:00:02.3"))
+    _, _, w, _ = cam.region(common.hms("10:00:02.3"))
     assert w == pytest.approx(600 * a.CAM_PAD, rel=0.02)
-    assert cam.region(a.hms("10:00:00.0")) is None
+    assert cam.region(common.hms("10:00:00.0")) is None
 
 
 def test_rest_counts_from_the_last_move_to_the_next():
-    gs = a.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:09.0", "tap", 900, 600)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 100, 100), ev("10:00:09.0", "tap", 900, 600)])
     tr = track(gs)
     start = tr.glides[0][0]
-    since, until = tr.rest(a.hms("10:00:03.0"))
-    assert since == pytest.approx(a.hms("10:00:03.0") - gs[0]["t1"]) and until == pytest.approx(start - a.hms("10:00:03.0"))
+    since, until = tr.rest(common.hms("10:00:03.0"))
+    assert since == pytest.approx(common.hms("10:00:03.0") - gs[0]["t1"]) and until == pytest.approx(start - common.hms("10:00:03.0"))
     assert tr.rest(gs[1]["t0"]) == (0, 0)
 
 
 def test_idle_fade_hides_a_resting_pointer_and_brings_it_back_before_it_moves():
     from PIL import Image
-    gs = a.gestures([ev("10:00:01.0", "tap", 300, 300), ev("10:00:09.0", "tap", 900, 600)])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 300, 300), ev("10:00:09.0", "tap", 900, 600)])
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"idle_fade": 1.5}}))
     tr = p.track(gs)
     def drawn(t):
         ov = Image.new("RGBA", (1280, 720))
         p.cursor(ov, tr, gs, t)
         return ov.getbbox() is not None
-    assert drawn(a.hms("10:00:01.5")) and not drawn(a.hms("10:00:05.0")) and drawn(tr.glides[0][0])
+    assert drawn(common.hms("10:00:01.5")) and not drawn(common.hms("10:00:05.0")) and drawn(tr.glides[0][0])
 
 
 def test_idle_spans_cover_only_long_quiet_gaps_inside_their_edges():
-    gs = a.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:03.0", "tap", 1, 1), ev("10:00:20.0", "tap", 1, 1)])
-    keys = a.key_items([ev("10:00:10.0", "key", keys="Enter")])
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 1, 1), ev("10:00:03.0", "tap", 1, 1), ev("10:00:20.0", "tap", 1, 1)])
+    keys = text.key_items([ev("10:00:10.0", "key", keys="Enter")])
     spans = a.idle_spans(gs, keys, [], 2.0)
     end3 = gs[1]["t1"] + 1.0
-    assert spans == [pytest.approx((end3 + 0.3, a.hms("10:00:10.0") - 0.3 - 0.3)),
-                     pytest.approx((a.hms("10:00:11.0") + 0.3, a.hms("10:00:20.0") - 0.8 - 0.3))]
+    assert spans == [pytest.approx((end3 + 0.3, common.hms("10:00:10.0") - 0.3 - 0.3)),
+                     pytest.approx((common.hms("10:00:11.0") + 0.3, common.hms("10:00:20.0") - 0.8 - 0.3))]
 
 
 def test_idle_spans_hold_a_step_caption_while_it_is_read():
-    keys = a.key_items([ev("10:00:30.0", "key", keys="Enter")])
+    keys = text.key_items([ev("10:00:30.0", "key", keys="Enter")])
     def quiet_from(title, to="10:00:29.0"):
-        steps = [{"from": a.hms("10:00:01.0"), "to": a.hms(to), "title": title}]
+        steps = [{"from": common.hms("10:00:01.0"), "to": common.hms(to), "title": title}]
         return a.idle_spans([], keys, steps, 2.0)[0][0]
-    t = a.hms("10:00:01.0") + a.IDLE_EDGE_S
+    t = common.hms("10:00:01.0") + a.IDLE_EDGE_S
     assert quiet_from("Save") == pytest.approx(t + 2.5)  # a short title: the 2.5 s floor
     assert quiet_from("x" * 30) == pytest.approx(t + 6.5)  # 1.5 s plus a second per 6 characters
     assert quiet_from("x" * 120) == pytest.approx(t + 9)  # a long one stops at 9 s
-    assert quiet_from("x" * 120, "10:00:05.0") == pytest.approx(a.hms("10:00:05.0") + a.IDLE_EDGE_S)  # never past the step
+    assert quiet_from("x" * 120, "10:00:05.0") == pytest.approx(common.hms("10:00:05.0") + a.IDLE_EDGE_S)  # never past the step
 
 
 def test_framer_pads_keeps_the_frame_and_rounds_its_corners():
@@ -500,14 +503,14 @@ def test_framer_pads_keeps_the_frame_and_rounds_its_corners():
 
 
 def test_step_anchor_is_the_first_press_inside_else_the_first_box():
-    gs = a.gestures([ev("10:00:01.0", "tap", 10, 20), ev("10:00:03.0", "tap", 300, 400)])
-    st = {"from": a.hms("10:00:02.0"), "to": a.hms("10:00:05.0"), "boxes": [[0, 0, 100, 50]]}
+    gs = pointer.gestures([ev("10:00:01.0", "tap", 10, 20), ev("10:00:03.0", "tap", 300, 400)])
+    st = {"from": common.hms("10:00:02.0"), "to": common.hms("10:00:05.0"), "boxes": [[0, 0, 100, 50]]}
     assert a.step_anchor(st, gs) == (300, 400)
-    assert a.step_anchor({**st, "from": a.hms("10:00:04.0")}, gs) == (50, 25)
+    assert a.step_anchor({**st, "from": common.hms("10:00:04.0")}, gs) == (50, 25)
     assert a.step_anchor({"from": 0, "to": 1}, gs) is None
 
 
-@pytest.mark.parametrize("kind", a.CAPTIONS)
+@pytest.mark.parametrize("kind", text.CAPTIONS)
 def test_every_caption_draws_and_reports_the_bottom_it_covers(kind):
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"caption": kind}}))
@@ -547,10 +550,10 @@ def test_zoom_true_is_the_default_magnification():
 
 def test_name_tag_trails_the_arrow():
     w, h, s = 120, 35, 1.0
-    assert a.tag_at(w, h, 0, s) == (58, 60)  # at rest: at the arrow's corner, below right of the tip
-    x, y = a.tag_at(w, h, np.pi, s)  # turned half round: above left, clear of the tip
+    assert pointer.tag_at(w, h, 0, s) == (58, 60)  # at rest: at the arrow's corner, below right of the tip
+    x, y = pointer.tag_at(w, h, np.pi, s)  # turned half round: above left, clear of the tip
     assert x + w < 0 and y + h < 0
-    x, y = a.tag_at(w, h, np.pi / 2 - np.arctan2(60, 58), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
+    x, y = pointer.tag_at(w, h, np.pi / 2 - np.arctan2(60, 58), s)  # body straight below (aimed): below, its right edge a third of the gap past the tip
     assert y > 0 and abs(x + w - np.hypot(58, 60) / 3) <= 1
 
 
@@ -558,7 +561,7 @@ def test_name_tag_trails_the_arrow():
 def test_cua_click_sparks_off_the_tip_without_a_ring():
     from PIL import Image, ImageDraw
     p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"cursor": "cua"}}))
-    g = a.gestures([ev("10:00:01.0", "tap", 640, 360)])[0]
+    g = pointer.gestures([ev("10:00:01.0", "tap", 640, 360)])[0]
     ov = Image.new("RGBA", (1280, 720))
     p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + 0.05, "mouse")
     assert ov.getbbox() is not None and ov.getbbox()[2] < 640 + 5  # strokes up and left of the tip, no ring round it
@@ -584,7 +587,7 @@ def test_a_step_zoom_eases_from_the_camera_view_not_the_full_frame():
 
 def test_the_touch_dot_and_ring_follow_size():
     from PIL import Image, ImageDraw
-    g = a.gestures([ev("10:00:01.0", "down", 640, 360), ev("10:00:02.0", "up")])[0]  # a hold: the dot alone between its rings
+    g = pointer.gestures([ev("10:00:01.0", "down", 640, 360), ev("10:00:02.0", "up")])[0]  # a hold: the dot alone between its rings
     def width(size, t):
         p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": size}}))
         ov = Image.new("RGBA", (1280, 720))
@@ -594,4 +597,4 @@ def test_the_touch_dot_and_ring_follow_size():
     assert 36 <= width(0.6, 0.6) <= 46  # a dot of 22 px radius (28 drew 50) at MARK_SIZE
     assert width(1.2, 0.6) == pytest.approx(2 * width(0.6, 0.6), abs=4)
     assert width(1.2, 0.3) == pytest.approx(2 * width(0.6, 0.3), abs=6)  # the ring grows with it
-    assert width(0.6, 0.3) == pytest.approx(2 * a.RING_R, rel=0.1)  # nearly grown: RING_R at MARK_SIZE
+    assert width(0.6, 0.3) == pytest.approx(2 * pointer.RING_R, rel=0.1)  # nearly grown: RING_R at MARK_SIZE
