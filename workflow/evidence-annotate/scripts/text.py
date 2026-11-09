@@ -21,7 +21,8 @@ TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins
 ANCHORS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size": 13, "weight": 500, "lines": [],
          "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "radius": None,
-         "pad": None, "margin": 10, "max_w": None, "max_lines": 1, "rect": None, "read": True}  # a block's keys and defaults
+         "pad": None, "margin": 10, "max_w": None, "max_lines": 1, "rect": None, "read": True,
+         "area": "frame"}  # a block's keys and defaults; area: anchored to the whole output frame or the recording in it
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner
 PART_KEYS = {"text", "color", "bold", "size", "dot", "rule"}
@@ -162,6 +163,8 @@ def check_block(b, where):
             sys.exit(f"{where}: {k} must be {n} numbers, got {v!r}")
     if blk["rect"] and (blk["rect"][2] <= 0 or blk["rect"][3] <= 0):
         sys.exit(f"{where}: rect must be [x,y,w,h] with w and h above 0, got {blk['rect']}")
+    if blk["area"] not in ("frame", "video"):
+        sys.exit(f"{where}: area must be frame or video, got {blk['area']!r}")
     for k in ("beside", "bullets", "read"):
         if not isinstance(blk[k], bool):
             sys.exit(f"{where}: {k} must be true or false, got {blk[k]!r}")
@@ -335,7 +338,7 @@ class TextLayer(Canvas):
         s, size = self.s, blk["size"]
         padx, pady = [v * s for v in (blk["pad"] or (0.62 * size, 0.27 * size))]
         gap = blk["gap"] * s
-        outer = blk["max_w"] * s if blk["max_w"] else self.ow - 2 * blk["margin"] * s
+        outer = blk["max_w"] * s if blk["max_w"] else self.area(blk)[2] - 2 * blk["margin"] * s
         room = min(outer, width or outer) - 2 * padx
         probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         measure = lambda f, text: probe.textlength(text, font=f)
@@ -377,14 +380,19 @@ class TextLayer(Canvas):
         self.cache[key] = im
         return im
 
+    def area(self, blk):
+        """(x, y, w, h) a block is anchored in: the whole output frame, or the recording inside its bands."""
+        return (self.ox, self.oy, self.w, self.h) if blk["area"] == "video" else (0, 0, self.ow, self.oh)
+
     def place(self, items):
-        """{id(block): (x, y)} on the output frame: per anchor, rows (a block `beside` the one before joins its row)
-        stacked away from the anchor's edge, ROW_GAP apart, the anchor's first block's margin off the edges."""
+        """{id(block): (x, y)} on the output frame: per area and anchor, rows (a block `beside` the one before joins
+        its row) stacked away from the anchor's edge, ROW_GAP apart, the anchor's first block's margin off the edges."""
         s, out, by = self.s, {}, {}
         for blk, im in items:
-            by.setdefault(blk["at"], []).append((blk, im))
-        for at, group in by.items():
+            by.setdefault((blk["area"], blk["at"]), []).append((blk, im))
+        for (_, at), group in by.items():
             v, hz = anchor(at)
+            X0, Y0, AW, AH = self.area(group[0][0])
             rows = []
             for blk, im in group:
                 if blk["beside"] and rows:
@@ -394,12 +402,12 @@ class TextLayer(Canvas):
             m = group[0][0]["margin"] * s
             heights = [max(im.height for _, im in r) for r in rows]
             total = sum(heights) + ROW_GAP * s * (len(rows) - 1)
-            y = m if v == "top" else self.oh - m if v == "bottom" else (self.oh - total) / 2
+            y = Y0 + (m if v == "top" else AH - m if v == "bottom" else (AH - total) / 2)
             for r, rh in zip(rows, heights):
                 if v == "bottom":
                     y -= rh
                 rw = sum(im.width for _, im in r) + SIDE_GAP * s * (len(r) - 1)
-                x = m if hz == "left" else self.ow - m - rw if hz == "right" else (self.ow - rw) / 2
+                x = X0 + (m if hz == "left" else AW - m - rw if hz == "right" else (AW - rw) / 2)
                 for blk, im in r:
                     dy = 0 if v == "top" else rh - im.height if v == "bottom" else (rh - im.height) / 2
                     out[id(blk)] = (x, y + dy)
@@ -441,7 +449,8 @@ class TextLayer(Canvas):
                 x2, y2, w2, hh2 = boxes[id(b2)]
                 if v1 != v2 or rank[h1] >= rank[h2] or not (x1 < x2 + w2 and x2 < x1 + w1 and y1 < y2 + hh2 and y2 < y1 + hh1):
                     continue
-                room = x2 - g - x1 if h1 == "left" else 2 * (x2 - g - self.ow / 2)
+                ax, _, aw, _ = self.area(b1)
+                room = x2 - g - x1 if h1 == "left" else 2 * (x2 - g - ax - aw / 2)
                 room = max(room, 3 * b1["size"] * self.s)
                 if room < w1 - 0.5 and room < widths.get(id(b1), float("inf")):
                     widths[id(b1)], changed = room, True

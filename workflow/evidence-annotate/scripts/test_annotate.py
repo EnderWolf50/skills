@@ -572,6 +572,21 @@ def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long(
             text.check_block(bad, "test")
 
 
+def test_a_block_can_anchor_to_the_recording_inside_the_bands():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    p.ow, p.oh, p.ox, p.oy = 1280, 800, 0, 40  # 40 px bands above and below
+    b = lambda **k: text.check_block({"lines": ["x"], **k}, "test")
+    frame, video = b(at="top-right"), b(at="top-right", area="video")
+    corner = b(at="bottom-left", area="video")
+    at = p.blocks(Image.new("RGBA", (1280, 800)), [frame, video, corner], 0, {})
+    assert at[id(frame)][1] == pytest.approx(10, abs=1)  # in the top band
+    assert at[id(video)][1] == pytest.approx(50, abs=1) and at[id(video)][0] + at[id(video)][2] == pytest.approx(1270, abs=1)
+    assert at[id(corner)][1] + at[id(corner)][3] == pytest.approx(750, abs=1)  # above the bottom band
+    with pytest.raises(SystemExit):
+        text.check_block({"area": "band"}, "test")
+
+
 def test_wrap_breaks_between_characters_keeps_words_and_punctuation_and_cuts_past_max_lines():
     m = lambda f, t: 10 * len(t)  # every character 10 px
     item = lambda t: [{"text": t}, None, 10 * len(t)]
