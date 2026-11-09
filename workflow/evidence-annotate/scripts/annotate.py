@@ -584,9 +584,10 @@ def render(args):
         placed = paint.blocks(ov, corner + ([cap] if cap else []) + blocks, t, tokens)
         if callout:
             paint.callout(ov, cur[1], cur[0] + 1, len(steps), cur[2], cur[1]["anchor"])
-        covered = CH - placed[id(cap)][1] if cap and cap["at"] == "bottom" and id(cap) in placed else 0
+        bottom = oy + H  # the recording's bottom edge: captions and key pills sit on the recording, inside any bands
+        covered = bottom - placed[id(cap)][1] if cap and cap["at"] == "bottom" and id(cap) in placed else 0
         if k := key_at(keys, t):  # above a bottom caption
-            paint.keys(ov, k[0], t, k[1], CH - round(24 * s) - (covered and covered - round(12 * s)))
+            paint.keys(ov, k[0], t, k[1], bottom - round(24 * s) - (covered and covered - round(12 * s)))
         blend(frame, ov)
         if framer:
             frame = framer(frame)

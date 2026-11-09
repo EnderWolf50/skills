@@ -482,7 +482,7 @@ class TextLayer(Canvas):
                 {"text": step.get("tag", f"{n}/{total}"), "size": 22 * k, "color": (255, 255, 255, 140)},
                 {"rule": True}, {"text": step["title"], "color": (255, 255, 255, 255)}]
             self.cache[key] = {**BLOCK, "from": step["from"], "to": step["to"], "_rise": True, "read": False,
-                               "at": "top-left" if self.style["caption"] == "chapter" else "bottom",
+                               "at": "top-left" if self.style["caption"] == "chapter" else "bottom", "area": "video",
                                "size": size, "weight": 600, "lines": [parts], "gap": 16 * k, "pad": [32 * k, 18 * k],
                                "bg": (15, 17, 24, 170), "margin": CAP_EDGE * k}
         return self.cache[key]
@@ -516,8 +516,8 @@ class TextLayer(Canvas):
         self.paste(ov, cap, min(max(x, edge), self.ow - edge - w), min(max(y, edge), self.oh - edge - h) + rise)
 
     def keys(self, ov, item, t, alpha, bottom):
-        """The key pill, centred with its bottom edge at y = bottom: keycaps joined by +, or the text typed so far
-        (a block in the same dark pill)."""
+        """The key pill, centred on the recording with its bottom edge at y = bottom: keycaps joined by +, or the
+        text typed so far (a block in the same dark pill)."""
         s = self.s * self.ck
         pad, h, cap_h, gap = 12 * s, 54 * s, 38 * s, 22 * s
         if "chars" in item:
@@ -527,12 +527,12 @@ class TextLayer(Canvas):
                                                           "bg": (18, 20, 28, 220), "radius": 16 * k, "color": (255, 255, 255, 255),
                                                           "lines": [[{"text": text}]] if text else []})
             if im := self.block_image(blk, {}):
-                self.paste(ov, fade(im, alpha) if alpha < 1 else im, (self.ow - im.width) / 2, bottom - im.height)
+                self.paste(ov, fade(im, alpha) if alpha < 1 else im, self.ox + (self.w - im.width) / 2, bottom - im.height)
             return
         d = ImageDraw.Draw(ov)
         widths = [d.textlength(c, font=self.f_key) + 28 * s for c in item["caps"]]
         w = sum(widths) + gap * (len(widths) - 1) + 2 * pad
-        x, y = (self.ow - w) / 2, bottom - h
+        x, y = self.ox + (self.w - w) / 2, bottom - h
         d.rounded_rectangle([x, y, x + w, y + h], radius=16 * s, fill=(18, 20, 28, int(220 * alpha)))
         x += pad
         for i, (c, cw) in enumerate(zip(item["caps"], widths)):

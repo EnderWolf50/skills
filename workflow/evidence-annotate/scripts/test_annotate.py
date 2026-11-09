@@ -531,6 +531,20 @@ def test_every_caption_draws_where_its_kind_puts_it(kind):
     assert a.load_style({"style": {"caption": "none"}})["caption"] == "none"
 
 
+def test_the_step_caption_and_key_pill_stay_on_the_recording_inside_the_bands():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT)
+    p.ow, p.oh, p.ox, p.oy = 1660, 760, 0, 40  # a 40 px band above, a 380 px band on the right
+    blk = p.caption_block({"from": 1.0, "to": 5.0, "title": "Save"}, 1, 2)
+    x, y, w, h = p.blocks(Image.new("RGBA", (1660, 760)), [blk], 3.0, {})[id(blk)]
+    edge = text.CAP_EDGE * 18 / text.CAPTION_DESIGN
+    assert x + w / 2 == pytest.approx(640, abs=1) and y + h == pytest.approx(760 - edge, abs=1)  # centred on the picture
+    ov = Image.new("RGBA", (1660, 760))
+    p.keys(ov, {"caps": ["Ctrl", "S"]}, 0, 1.0, 700)
+    x0, _, x1, _ = ov.getbbox()
+    assert (x0 + x1) / 2 == pytest.approx(640, abs=2)
+
+
 def test_a_step_tag_takes_the_place_of_its_number():
     p = a.Painter(1280, 720, SPACE, FONT)
     step = {"from": 1.0, "to": 5.0, "title": "Save", "tag": "結果"}
