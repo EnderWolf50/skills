@@ -21,7 +21,7 @@ TYPE_JOIN_S = 1.2  # typing that starts this soon after the last character joins
 ANCHORS = ("top-left", "top", "top-right", "left", "center", "right", "bottom-left", "bottom", "bottom-right")
 BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size": 13, "weight": 500, "lines": [],
          "sep": "", "gap": 0, "bullets": False, "color": "#e6e6e6", "bg": "#0000008c", "radius": None,
-         "pad": None, "margin": 6, "max_w": None, "max_lines": 1, "rect": None, "read": True,
+         "pad": None, "margin": 6, "min_w": None, "max_w": None, "max_lines": 1, "rect": None, "read": True,
          "area": "frame"}  # a block's keys and defaults; area: anchored to the whole output frame or the recording in it
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner
@@ -152,7 +152,7 @@ def check_block(b, where):
     for k, lo, hi in (("size", 6, 96), ("weight", 100, 900), ("gap", 0, 200), ("margin", 0, 2000)):
         if not isinstance(blk[k], (int, float)) or not lo <= blk[k] <= hi:
             sys.exit(f"{where}: {k} must be a number from {lo} to {hi}, got {blk[k]!r}")
-    for k in ("max_w", "radius"):
+    for k in ("min_w", "max_w", "radius"):
         if blk[k] is not None and (not isinstance(blk[k], (int, float)) or blk[k] < 0):
             sys.exit(f"{where}: {k} must be a number of px, got {blk[k]!r}")
     if not isinstance(blk["max_lines"], int) or isinstance(blk["max_lines"], bool) or not 1 <= blk["max_lines"] <= 20:
@@ -332,7 +332,8 @@ class TextLayer(Canvas):
         lines = [line for line in lines if line] if any(lines) else []
         if not lines:
             return None
-        key = ("block", id(blk), repr(lines), bg, width)
+        look = repr(sorted((k, v) for k, v in blk.items() if k not in ("lines", "from", "to")))
+        key = ("block", look, repr(lines), bg, width)  # by content: an id() is reused once a passing dict is freed
         if key in self.cache:
             return self.cache[key]
         s, size = self.s, blk["size"]
@@ -358,7 +359,8 @@ class TextLayer(Canvas):
             indent = items[0][2] + gap if blk["bullets"] else 0  # a bulleted line's later rows hang under its text
             laid += wrap(items, room, blk["max_lines"], gap, measure, indent)
         pitch = LINE_H * size * s
-        w = round(2 * padx + max(x0 + sum(w for _, _, w in r) + gap * (len(r) - 1) for x0, r in laid))
+        w = round(max(2 * padx + max(x0 + sum(w for _, _, w in r) + gap * (len(r) - 1) for x0, r in laid),
+                      min((blk["min_w"] or 0) * s, 2 * padx + room)))  # min_w, but never past the room it has
         h = round(2 * pady + size * s + pitch * (len(laid) - 1))
         im = Image.new("RGBA", (max(w, 1), max(h, 1)))
         r = blk["radius"] * s if blk["radius"] is not None else h / 2 if len(laid) == 1 else 6 * s

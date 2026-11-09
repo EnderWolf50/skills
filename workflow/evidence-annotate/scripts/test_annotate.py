@@ -579,6 +579,8 @@ def test_block_lines_take_tokens_parts_bullets_and_end_in_an_ellipsis_when_long(
     assert p.block_image(text.check_block({"lines": ["{speed}"]}, "t"), {"speed": ""}) is None  # nothing to show
     long = text.check_block({"lines": ["x" * 400], "max_w": 200}, "test")
     assert p.block_image(long, {}).width <= 200 + 1
+    assert p.block_image(text.check_block({"lines": ["x"], "min_w": 300}, "t"), {}).width == 300  # at least min_w
+    assert p.block_image(text.check_block({"lines": ["x"], "min_w": 300, "max_w": 200}, "t"), {}).width == 200  # max_w wins
     fact = text.check_block({"lines": [[{"text": "排序：", "color": "#aeb4bc"}, {"text": "true", "color": "#5bd07a", "bold": True}]],
                              "bullets": True}, "test")
     assert p.block_image(fact, {}) is not None
