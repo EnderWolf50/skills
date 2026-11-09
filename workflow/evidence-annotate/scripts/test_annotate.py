@@ -620,6 +620,17 @@ def test_wrap_breaks_between_characters_keeps_words_and_punctuation_and_cuts_pas
     assert rows_of(hang) == [["• ", "一二三"], ["四五六"]] and hang[1][0] == 20  # the next row hangs under the text
 
 
+def test_a_hanging_part_sets_where_wrapped_rows_start():
+    p = a.Painter(1280, 720, SPACE, FONT)
+    blk = lambda first: text.check_block({"max_w": 200, "max_lines": 3, "pad": [0, 0], "bg": None,
+                                         "lines": [[first, "x" * 60]]}, "t")
+    flat = p.block_image(blk({"text": "預期  "}), {})
+    hung = p.block_image(blk({"text": "預期  ", "hang": True}), {})
+    col = lambda im, y: next(x for x in range(im.width) if im.getpixel((x, y))[3] > 100)
+    row2 = round(13 * text.LINE_H + 6.5)  # the second row's middle
+    assert col(flat, row2) < 3 and col(hung, row2) > 20  # the second row starts under the text after the label
+
+
 def test_blocks_in_one_row_make_way_left_for_centre_and_right():
     from PIL import Image
     p = a.Painter(1280, 720, SPACE, FONT)

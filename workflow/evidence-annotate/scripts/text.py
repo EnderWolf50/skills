@@ -25,7 +25,7 @@ BLOCK = {"from": None, "to": None, "at": "bottom-left", "beside": False, "size":
          "area": "frame"}  # a block's keys and defaults; area: anchored to the whole output frame or the recording in it
 CORNER = {"at": "bottom-left", "lines": [["{clock}", "{step}", "{speed}"]], "sep": "  ·  ", "color": "#e6e6e6e6",
           "read": False}  # style.corner: the default block in the corner
-PART_KEYS = {"text", "color", "bold", "size", "dot", "rule"}
+PART_KEYS = {"text", "color", "bold", "size", "dot", "rule", "hang"}  # hang: a wrapped line's later rows start after it
 TOKENS = re.compile(r"\{(clock|step|speed)\}")
 LINE_H = 1.45  # line pitch, times the block's size
 ROW_GAP = 4  # px at 1280 wide between blocks stacked at one anchor
@@ -345,7 +345,7 @@ class TextLayer(Canvas):
         measure = lambda f, text: probe.textlength(text, font=f)
         laid = []  # visual rows: (x, [[part, font, width], ...])
         for line in lines:
-            items = [[{"text": "•  ", "color": BULLET}, self.tfont(size, blk["weight"]), 0]] if blk["bullets"] else []
+            items = [[{"text": "•  ", "color": BULLET, "hang": True}, self.tfont(size, blk["weight"]), 0]] if blk["bullets"] else []
             for p in line:
                 if "dot" in p:
                     items.append([p, None, 0.57 * size * s])
@@ -356,7 +356,8 @@ class TextLayer(Canvas):
             for it in items:
                 if "text" in it[0]:
                     it[2] = measure(it[1], it[0]["text"])
-            indent = items[0][2] + gap if blk["bullets"] else 0  # a bulleted line's later rows hang under its text
+            hang = next((i for i, it in enumerate(items) if it[0].get("hang")), None)  # later rows start after it
+            indent = sum(w for _, _, w in items[:hang + 1]) + gap * (hang + 1) if hang is not None else 0
             laid += wrap(items, room, blk["max_lines"], gap, measure, indent)
         pitch = LINE_H * size * s
         w = round(max(2 * padx + max(x0 + sum(w for _, _, w in r) + gap * (len(r) - 1) for x0, r in laid),
