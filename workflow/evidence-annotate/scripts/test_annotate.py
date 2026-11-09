@@ -295,6 +295,20 @@ def test_ring_shows_only_after_the_press():
         assert (ov.getbbox() is not None) == drawn, age
 
 
+def test_ring_starts_at_half_size_and_stays_clear_until_near_its_end():
+    from PIL import Image
+    p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": a.MARK_SIZE}}))
+    def drawn(age):
+        ov = Image.new("RGBA", (1280, 720))
+        p.ring(ov, 640, 360, age)
+        x0, _, x1, _ = ov.getbbox()
+        return x1 - x0, int(np.asarray(ov)[:, :, 3].max())
+    width, _ = drawn(0.01)
+    assert width == pytest.approx(a.RING_R, rel=0.15)  # half of its full radius: a diameter of RING_R
+    _, alpha = drawn(0.7 * a.RING_S)
+    assert alpha > 140  # still a clear ring late in its run
+
+
 def test_mouse_pointer_sprite_is_drawn_tip_first_and_clipped_at_the_edge():
     p = a.Painter(1280, 720, SPACE, FONT)
     from PIL import Image
@@ -555,13 +569,14 @@ def test_a_step_zoom_eases_from_the_camera_view_not_the_full_frame():
 
 def test_the_touch_dot_and_ring_follow_size():
     from PIL import Image, ImageDraw
-    g = a.gestures([ev("10:00:01.0", "tap", 640, 360)])[0]
+    g = a.gestures([ev("10:00:01.0", "down", 640, 360), ev("10:00:02.0", "up")])[0]  # a hold: the dot alone between its rings
     def width(size, t):
         p = a.Painter(1280, 720, SPACE, FONT, a.load_style({"style": {"size": size}}))
         ov = Image.new("RGBA", (1280, 720))
         p.gesture(ov, ImageDraw.Draw(ov), g, g["t0"] + t, "touch")
         x0, _, x1, _ = ov.getbbox()
         return x1 - x0
-    assert 36 <= width(0.6, 0.0) <= 46  # a dot of 22 px radius (28 drew 50) at MARK_SIZE
-    assert width(1.2, 0.0) == pytest.approx(2 * width(0.6, 0.0), abs=4)
-    assert width(1.2, 0.5) == pytest.approx(2 * width(0.6, 0.5), abs=6)  # the ring grows with it
+    assert 36 <= width(0.6, 0.6) <= 46  # a dot of 22 px radius (28 drew 50) at MARK_SIZE
+    assert width(1.2, 0.6) == pytest.approx(2 * width(0.6, 0.6), abs=4)
+    assert width(1.2, 0.3) == pytest.approx(2 * width(0.6, 0.3), abs=6)  # the ring grows with it
+    assert width(0.6, 0.3) == pytest.approx(2 * a.RING_R, rel=0.1)  # nearly grown: RING_R at MARK_SIZE

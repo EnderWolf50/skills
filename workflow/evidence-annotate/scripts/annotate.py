@@ -48,12 +48,14 @@ FADE_S = 0.35  # step caption and box fade
 CAP_EDGE = 20  # px at 1280 wide from the frame's edge to a pill or chapter caption
 FLOAT_AMP = 0.5  # style.float drift, x Cua's own: ours is drawn larger on a smaller frame
 ZOOM_S = 0.6  # zoom ease-in / ease-out
-RING_S = 0.6  # click ring: grows and fades after a press (and a drag's or hold's release), never before
+RING_S = 0.4  # click ring: grows and fades after a press (and a drag's or hold's release), never before; CleanShot X's
+# lasts about this long
 PRESS_S = 0.08  # pointer shrinks to PRESS_K over this long before a press (ease-out), as Figma's snaps down
 RELEASE_S = 0.3  # and springs back over this long after the release (back-out, a 2.5 % overshoot)
 PRESS_K = 0.8
-MARK_SIZE = 0.6  # the style.size at which the touch dot is 22 px in radius and the click ring grows to 100 px (at
+MARK_SIZE = 0.6  # the style.size at which the touch dot is 22 px in radius and the click ring grows to RING_R (at
 # 1280 wide); they and the drag trail follow size from there
+RING_R = 60  # px: about 1.5 times the arrow's height, as CleanShot X's click ring grows to
 CAPTION_K = 0.65  # step captions and key pills at this scale of their first design: an 18 px title, 14 px keys
 STYLE = {"cursor": "mac", "color": None, "label": "", "label_color": None, "label_text": None, "trail": None, "motion": "signature_arc", "arc": None,
          "tilt": None, "glow": None, "click": None, "size": 0.4, "zoom": 0, "idle_fade": 0, "float": False, "frame": None, "caption": "pill", "dot": False}  # events.json "style"; color None = the
@@ -663,11 +665,12 @@ class Painter:
                    width=max(1, round(0.045 * L)))
 
     def ring(self, ov, X, Y, age):
-        """Click ring: grows to 100 px (at 1280 wide and size MARK_SIZE) with ease-out cubic and fades over RING_S after the press."""
+        """Click ring, as CleanShot X's: from half of RING_R (at 1280 wide and size MARK_SIZE) it eases out to RING_R over
+        RING_S after the press, keeping its opacity until near the end."""
         p = age / RING_S
         if 0 <= p <= 1:
-            R, a = 100 * self.s * self.mark_k, 0.7 * (1 - p) ** 1.5
-            self.circle(ov, X, Y, R * (1 - (1 - p) ** 3), self.color, 0.3 * a, self.color, a, (0.1 + 0.06 * p) * R * 0.6)
+            R, a = RING_R * self.s * self.mark_k, 0.8 * (1 - p ** 4)
+            self.circle(ov, X, Y, R * (0.5 + 0.5 * (1 - (1 - p) ** 2)), self.color, 0.12 * a, self.color, a, 0.08 * R)
 
     def sprite(self, k):
         """Pointer sprite at press scale k, drawn 4x and scaled down, square with the tip at its centre (so it
@@ -882,7 +885,7 @@ class Painter:
         if kind == "callout" and anchor:
             X, Y = self.xy(*anchor)
             w, h = cap.size
-            gap, edge = 72 * s, 16 * s  # clear of the click ring, which fades out before it grows to 100 px
+            gap, edge = 72 * s, 16 * s  # clear of the click ring
             # the pointer and its name tag hang below and right of the tip: try left, above, right, below
             sides = [(X - gap - w, Y - h / 2), (X - w / 2, Y - gap - h), (X + gap + 150 * s, Y - h / 2), (X - w / 2, Y + gap + 60 * s)]
             fits = lambda xy: edge <= xy[0] <= self.w - edge - w and edge <= xy[1] <= self.h - edge - h
