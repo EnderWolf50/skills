@@ -15,7 +15,7 @@ The dotfiles repo is the single source of truth for every machine: Windows (Powe
    **Renaming or re-laying out a skill** touches three places: its entry in `.chezmoidata/skills.toml`, its folder in the EnderWolf50/skills checkout, and the installed copy under `~/.agents/skills`. Done: all three are listed with the change each needs before any is edited; the first two change through a pull request each, the third through Sync.
 3. **Edit in a worktree** of the dotfiles repo on a feature branch, starting from fresh `origin/main`. Every tool entry carries an install path for **both** OSes:
    - Windows: `winget`, `scoop`, `npm`, `psgallery` or `go`.
-   - Linux: `brew`, `cask` or `npm`. `run_before_install-tools.sh` installs only those three; a `go` value is Windows-only, so a Go tool needs a brew formula or a manual install noted in `after`.
+   - Linux: `brew`, `cask`, `npm` or `go`. `run_before_install-tools.sh` tries them in that order; a `go` value installs with `go install` into `~/.local/bin` once mise has Go, so a Go tool needs nothing more.
    - A tool only one OS uses says so: `os = "windows"`, or a `note` naming why Linux has none.
    Done: each new or changed entry installs on both OSes, or names the OS that skips it.
 4. **Check** from the worktree root: `python3 .github/check.py` (lefthook runs it on commit), `uv run --no-project --script .github/check-codex.py` and `python3 .github/check-agent-plugins.py`. CI runs all three on Linux. Done: each exits 0.
