@@ -52,6 +52,11 @@ play_jobs = []                       # GitLab manual jobs ship.py play runs, in 
 require_jobs = []                    # passed to merge-pr as --require-job
 timeout = 14400                      # seconds ship.py play and merge-pr wait
 
+[[merge.when]]                       # optional, repeatable: jobs only for requests that touch these paths
+paths = ["web/**", "e2e/**/*.ts"]    # globs on repository-relative paths: * stays in a folder, ** crosses folders
+play_jobs = ["build-web", "e2e"]
+require_jobs = ["e2e"]
+
 [backport]
 mode = "never"                       # never | ask (list candidates, wait) | auto
 milestone = "Cycle {n}"              # pattern matched against the issue's milestone; captures {n}
@@ -59,6 +64,8 @@ branch = "release/{n}"               # the target; must exist on the remote
 name = "backport/{n}-{request}"      # backport branch; {request} = the source request's number
 auto_labels = ["found-in-staging"]   # an issue label that authorizes the backport without asking
 ```
+
+A request's jobs are the base `play_jobs` and `require_jobs` plus those of every `[[merge.when]]` entry with a `paths` pattern matching a file the request changes (a renamed file matches under its old and new name), without repeats, in order. An entry needs `paths` and at least one of `play_jobs` and `require_jobs`. `ship.py need <number>` prints the request's require jobs as `--require-job <name>` arguments; `ship.py play` plays its play jobs.
 
 `ship.py backport <issue>` prints one of three verdicts: no backport (with why), `candidate` (ask the user), or `authorized` (by `mode = "auto"` or an `auto_labels` label). The `docs.backport` files may add conditions of their own; they win.
 

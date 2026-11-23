@@ -77,7 +77,8 @@ DEFAULTS = {
     "docs": {"fixer": [], "verifier": [], "opener": [], "merger": [], "backport": []},
     "request": {"template": "", "labels": [], "milestone": "issue", "update": "rebase", "pre_push": [],
                 "draft": False, "language": ""},
-    "merge": {"ask": True, "method": "merge", "require_jobs": [], "play_jobs": [], "timeout": 14400},
+    "merge": {"ask": True, "method": "merge", "require_jobs": [], "play_jobs": [], "when": [],
+              "timeout": 14400},
     "backport": {"mode": "never", "milestone": "", "branch": "", "name": "backport/{branch}-{request}",
                  "auto_labels": []},
     "state_dir": "",
@@ -111,6 +112,61 @@ class Config:
         return Path(raw).expanduser()
 
 
+WHEN_KEYS = ("paths", "play_jobs", "require_jobs")
+
+
+def check_when(entries: list, where: Path) -> None:
+    for i, entry in enumerate(entries, 1):
+        name = f"merge.when #{i}"
+        if not isinstance(entry, dict):
+            raise SweepError(f"{where}: {name} must be a table ([[merge.when]])")
+        unknown = set(entry) - set(WHEN_KEYS)
+        if unknown:
+            raise SweepError(f"{where}: unknown key(s) in {name}: {', '.join(sorted(unknown))}")
+        for key in WHEN_KEYS:
+            value = entry.get(key, [])
+            if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+                raise SweepError(f"{where}: {name}.{key} must be a list of strings")
+        if not entry.get("paths"):
+            raise SweepError(f"{where}: {name}.paths must list at least one pattern")
+        if not entry.get("play_jobs") and not entry.get("require_jobs"):
+            raise SweepError(f"{where}: {name} needs play_jobs or require_jobs")
+
+
+def glob_regex(pattern: str) -> re.Pattern:
+    """`*` and `?` stay inside one path segment; `**/` is any number of directories (none included), `**` anything."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    return re.compile("".join(out) + r"\Z")
+
+
+def select_jobs(merge: dict, changed: list[str]) -> tuple[list[str], list[str]]:
+    """(play_jobs, require_jobs) for a request that changes these paths: the base lists plus each matching
+    merge.when entry's, without repeats, in order."""
+    play, require = list(merge["play_jobs"]), list(merge["require_jobs"])
+    for entry in merge["when"]:
+        patterns = [glob_regex(p) for p in entry["paths"]]
+        if any(rx.match(path) for rx in patterns for path in changed):
+            play += entry.get("play_jobs", [])
+            require += entry.get("require_jobs", [])
+    return list(dict.fromkeys(play)), list(dict.fromkeys(require))
+
+
 def merge_defaults(raw: dict, where: Path) -> dict:
     data: dict = {}
     for key, default in DEFAULTS.items():
@@ -128,6 +184,8 @@ def merge_defaults(raw: dict, where: Path) -> dict:
                 allowed = CHOICES.get((key, name))
                 if allowed and value not in allowed:
                     raise SweepError(f"{where}: {key}.{name} = {value!r}, expected one of {sorted(allowed - {''})}")
+            if key == "merge":
+                check_when(merged["when"], where)
             data[key] = merged
         else:
             data[key] = raw.get(key, default)
@@ -300,6 +358,11 @@ class GitLab:
     def play(self, job_id: int) -> None:
         self.api(f"{self.base}/jobs/{job_id}/play", "-X", "POST")
 
+    def changed_files(self, number: int) -> list[str]:
+        """Every path the request touches, a rename under both names."""
+        diffs = self.pages(f"{self.base}/merge_requests/{number}/diffs?per_page=100")
+        return list(dict.fromkeys(p for d in diffs for p in (d.get("new_path"), d.get("old_path")) if p))
+
 
 class GitHub:
     name, sigil = "GitHub", "#"
@@ -393,6 +456,11 @@ class GitHub:
 
     def play(self, job_id) -> None:
         raise SweepError("GitHub has no manual jobs to play")
+
+    def changed_files(self, number: int) -> list[str]:
+        """Every path the request touches, a rename under both names."""
+        files = self.pages(f"{self.base}/pulls/{number}/files?per_page=100")
+        return list(dict.fromkeys(p for f in files for p in (f.get("filename"), f.get("previous_filename")) if p))
 
 
 def forge(cfg: Config, run=run_cli):

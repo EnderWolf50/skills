@@ -100,6 +100,84 @@ def test_play_refuses_github(capsys, config):
     assert code == ship.ERROR
 
 
+WHEN = ('[merge]\nplay_jobs = ["build"]\nrequire_jobs = ["unit"]\n'
+        '[[merge.when]]\npaths = ["web/**", "specs/*.ts"]\nplay_jobs = ["e2e"]\nrequire_jobs = ["e2e"]\n'
+        '[[merge.when]]\npaths = ["**/*.css"]\nplay_jobs = ["e2e", "visual"]\nrequire_jobs = ["unit", "visual"]\n')
+
+
+def diffs(*files):
+    return ok([{"new_path": new, "old_path": old} for new, old in files])
+
+
+def need(config, files, text=WHEN):
+    r = {"git remote get-url": (0, "git@git.example.com:group/project.git\n", ""),
+         "merge_requests/5/diffs": diffs(*files)}
+    return run(["need", "5"], r, config, text)
+
+
+def test_need_without_a_match_prints_the_base_jobs(capsys, config):
+    code, _ = need(config, [("docs/a.md", "docs/a.md")])
+    assert code == ship.OK
+    assert capsys.readouterr().out.strip() == "--require-job unit"
+
+
+def test_need_adds_the_jobs_of_one_match(capsys, config):
+    need(config, [("web/page.js", "web/page.js")])
+    assert capsys.readouterr().out.strip() == "--require-job unit --require-job e2e"
+
+
+def test_need_joins_two_matches_without_repeats(capsys, config):
+    need(config, [("web/page.js", "web/page.js"), ("theme/app.css", "theme/app.css")])
+    assert capsys.readouterr().out.strip() == "--require-job unit --require-job e2e --require-job visual"
+
+
+def test_a_renamed_file_matches_by_its_old_path(capsys, config):
+    need(config, [("lib/page.js", "web/page.js")])
+    assert capsys.readouterr().out.strip() == "--require-job unit --require-job e2e"
+
+
+def test_need_with_no_jobs_prints_an_empty_line(capsys, config):
+    code, fake = need(config, [], '[[merge.when]]\npaths = ["a"]\nrequire_jobs = ["x"]\n')
+    assert code == ship.OK
+    assert capsys.readouterr().out == "\n"
+
+
+def test_need_reads_no_files_when_nothing_is_conditional(capsys, config):
+    r = {"git remote get-url": (0, "git@git.example.com:group/project.git\n", "")}
+    code, fake = run(["need", "5"], r, config, '[merge]\nrequire_jobs = ["unit"]\n')
+    assert capsys.readouterr().out.strip() == "--require-job unit"
+    assert not any("diffs" in c for c in fake.calls)
+
+
+def test_play_plays_the_jobs_of_matching_entries(capsys, config):
+    jobs = ok([job(1, "build", "success"), job(2, "e2e", "manual"), job(3, "visual", "success")])
+    r = {"git remote get-url": (0, "git@git.example.com:group/project.git\n", ""),
+         "merge_requests/5/diffs": diffs(("web/page.js", "web/page.js")),
+         "/play -X POST": ok({}), "pipelines/9/jobs": jobs, "merge_requests/5": mr()}
+    code, fake = run(["play", "5", "--timeout", "60"], r, config, WHEN)
+    assert code == ship.TIMED_OUT
+    assert {c for c in fake.calls if "/play" in c} == {"glab api projects/:id/jobs/2/play -X POST"}
+
+
+def test_play_ignores_an_entry_whose_paths_do_not_match(config):
+    jobs = ok([job(1, "build", "success"), job(2, "e2e", "manual")])
+    r = {"git remote get-url": (0, "git@git.example.com:group/project.git\n", ""),
+         "merge_requests/5/diffs": diffs(("docs/a.md", "docs/a.md")),
+         "pipelines/9/jobs": jobs, "merge_requests/5": mr(pipe_status="success")}
+    code, fake = run(["play", "5"], r, config, WHEN)
+    assert code == ship.OK
+    assert not any("/play" in c for c in fake.calls)
+
+
+def test_need_on_github_reads_the_pull_request_files(capsys, config):
+    r = {"git remote get-url": (0, "https://github.com/owner/repo.git\n", ""),
+         "pulls/5/files": ok([{"filename": "lib/page.js", "previous_filename": "web/page.js"}])}
+    code, fake = run(["need", "5"], r, config, WHEN)
+    assert code == ship.OK
+    assert capsys.readouterr().out.strip() == "--require-job unit --require-job e2e"
+    assert "gh api --paginate repos/owner/repo/pulls/5/files?per_page=100" in fake.calls
+
+
 def test_watch_prints_changes_until_every_request_is_done(capsys, config):
     r = routes([mr(), mr(), mr(state="merged")], ok([]), **{"merge_requests/6": mr(state="closed")})
     code, _ = run(["watch", "5", "6"], r, config)

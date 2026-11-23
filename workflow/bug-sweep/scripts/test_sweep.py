@@ -57,6 +57,65 @@ def test_bad_config_is_refused(config, text, message):
         sweep.load_config(Fake(REMOTE), config(text))
 
 
+@pytest.mark.parametrize("text, message", [
+    ("[[merge.when]]\nplay_jobs = ['a']\n", r"when #1.paths must list"),
+    ("[[merge.when]]\npaths = ['a']\n", "needs play_jobs or require_jobs"),
+    ("[[merge.when]]\npaths = 'a'\nplay_jobs = ['a']\n", "paths must be a list of strings"),
+    ("[[merge.when]]\npaths = ['a']\nrequire_jobs = [1]\n", "require_jobs must be a list of strings"),
+    ("[[merge.when]]\npaths = ['a']\nrequire_jobs = ['a']\nbranch = 'x'\n", "unknown key.s. in merge.when #1: branch"),
+    ("[merge]\nwhen = 'x'\n", "merge.when must be list"),
+    ("[merge]\nwhen = ['x']\n", "merge.when #1 must be a table"),
+])
+def test_bad_merge_when_is_refused(config, text, message):
+    with pytest.raises(sweep.SweepError, match=message):
+        sweep.load_config(Fake(REMOTE), config(text))
+
+
+@pytest.mark.parametrize("pattern, path, hit", [
+    ("web/**", "web/a/b.js", True),
+    ("web/**", "webapp/a.js", False),
+    ("**/*.css", "a.css", True),
+    ("**/*.css", "x/y/a.css", True),
+    ("*.css", "x/a.css", False),
+    ("src/*/page.js", "src/a/page.js", True),
+    ("src/*/page.js", "src/a/b/page.js", False),
+    ("a/**/z", "a/z", True),
+    ("a/**/z", "a/b/c/z", True),
+    ("v?.js", "v1.js", True),
+    ("a.b", "axb", False),
+])
+def test_glob_regex(pattern, path, hit):
+    assert bool(sweep.glob_regex(pattern).match(path)) is hit
+
+
+WHEN = {"play_jobs": ["build"], "require_jobs": ["unit"], "when": [
+    {"paths": ["web/**"], "play_jobs": ["e2e"], "require_jobs": ["e2e"]},
+    {"paths": ["**/*.css"], "play_jobs": ["e2e", "visual"]}]}
+
+
+def test_select_jobs_without_a_match_keeps_the_base():
+    assert sweep.select_jobs(WHEN, ["docs/a.md"]) == (["build"], ["unit"])
+
+
+def test_select_jobs_adds_one_match():
+    assert sweep.select_jobs(WHEN, ["web/a.js"]) == (["build", "e2e"], ["unit", "e2e"])
+
+
+def test_select_jobs_joins_two_matches_and_drops_repeats():
+    assert sweep.select_jobs(WHEN, ["web/a.js", "x/b.css"]) == (["build", "e2e", "visual"], ["unit", "e2e"])
+
+
+def test_select_jobs_with_no_changed_files_keeps_the_base():
+    assert sweep.select_jobs(WHEN, []) == (["build"], ["unit"])
+
+
+def test_gitlab_changed_files_pages_and_keeps_a_rename_under_both_names(config):
+    cfg = sweep.load_config(Fake(REMOTE), config())
+    fake = Fake({"merge_requests/5/diffs": (0, '[{"new_path": "b.js", "old_path": "a.js"}]\n[{"new_path": "c.js", "old_path": "c.js"}]', "")})
+    assert sweep.GitLab(cfg, fake).changed_files(5) == ["b.js", "a.js", "c.js"]
+    assert fake.calls == ["glab api --paginate projects/:id/merge_requests/5/diffs?per_page=100"]
+
+
 def test_missing_config_names_the_expected_path():
     with pytest.raises(sweep.SweepError, match=r"bug-sweep.git\.example\.com.group.project\.toml"):
         sweep.load_config(Fake(REMOTE))

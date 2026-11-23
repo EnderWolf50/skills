@@ -4,11 +4,14 @@
 """Pipeline helpers between opening a request and merging it with the merge-pr skill.
 
 uv run ship.py jobs <number>                     print the head pipeline and its latest job per name
-uv run ship.py play <number> [--timeout S]       play merge.play_jobs as each turns manual; wait until they all pass
+uv run ship.py need <number>                     the require jobs for this request, as `--require-job <name>` arguments
+uv run ship.py play <number> [--timeout S]       play the request's play jobs as each turns manual; wait until they all pass
 uv run ship.py watch <number>... [--file F]      one line per state change until every request is merged or closed
 uv run ship.py backport <issue>                  the release branch backport.* picks for an issue, and whether its labels
                                                  authorize the backport without asking
 
+A request's jobs are merge.play_jobs and merge.require_jobs plus those of every merge.when entry whose paths match a file
+the request changes (a renamed file counts under both names).
 play is GitLab only: it plays a listed job that sits at manual, fails on a listed job that fails or on any failed job
 that may not fail, and passes once every listed job the pipeline has is green on the request's head.
 Exit codes: 0 done, 1 error, 2 blocked (failed, closed, head moved), 3 timed out.
@@ -20,7 +23,7 @@ import sys
 import time
 from pathlib import Path
 
-from sweep import Config, SweepError, backport_target, forge, load_config, remote_branches, run_cli
+from sweep import Config, SweepError, backport_target, forge, load_config, remote_branches, run_cli, select_jobs
 
 OK, ERROR, BLOCKED, TIMED_OUT = 0, 1, 2, 3
 FAILED = {"failed", "canceled", "canceling"}
@@ -58,12 +61,24 @@ def play_verdict(jobs: dict[str, dict], play: list[str], pipeline_status: str) -
     return "ok", f"passed: {', '.join(present) or 'no listed job in this pipeline'}", []
 
 
+def jobs_for(cfg: Config, f, number: int) -> tuple[list[str], list[str]]:
+    """(play_jobs, require_jobs) of one request; the changed paths are read only when a merge.when entry needs them."""
+    merge = cfg["merge"]
+    return select_jobs(merge, f.changed_files(number) if merge["when"] else [])
+
+
+def cmd_need(cfg: Config, run, number: int) -> int:
+    _, require = jobs_for(cfg, forge(cfg, run), number)
+    print(" ".join(f"--require-job {name}" for name in require))
+    return OK
+
+
 def cmd_play(cfg: Config, run, number: int, timeout: int, interval: int, sleep=time.sleep, clock=time.monotonic) -> int:
     if cfg.kind != "gitlab":
         print("error: play is GitLab only; GitHub has no manual jobs")
         return ERROR
     f = forge(cfg, run)
-    play = cfg["merge"]["play_jobs"]
+    play, _ = jobs_for(cfg, f, number)
     deadline, last, head = clock() + timeout, None, None
     while True:
         st = f.request_state(number)
@@ -160,6 +175,7 @@ def main(argv: list[str], run=run_cli, sleep=time.sleep, clock=time.monotonic) -
     w.add_argument("numbers", type=num, nargs="*")
     w.add_argument("--file", help="file of request numbers, re-read every round so numbers can be added")
     w.add_argument("--interval", type=int, default=60)
+    sub.add_parser("need").add_argument("number", type=num)
     sub.add_parser("backport").add_argument("number", type=num)
     args = p.parse_args(argv)
     try:
@@ -168,6 +184,8 @@ def main(argv: list[str], run=run_cli, sleep=time.sleep, clock=time.monotonic) -
             return cmd_jobs(cfg, run, args.number)
         if args.cmd == "play":
             return cmd_play(cfg, run, args.number, args.timeout or cfg["merge"]["timeout"], args.interval, sleep, clock)
+        if args.cmd == "need":
+            return cmd_need(cfg, run, args.number)
         if args.cmd == "watch":
             return cmd_watch(cfg, run, args.numbers, args.file, args.interval, sleep)
         return cmd_backport(cfg, run, args.number)
