@@ -115,7 +115,7 @@ def test_a_short_sha_is_refused_before_any_call():
 
 
 def test_another_target_branch_blocks():
-    code, fake = run(["5", "--target", "release/sprint-163"], gitlab())
+    code, fake = run(["5", "--target", "release/12"], gitlab())
     assert code == merge_pr.BLOCKED
     assert fake.merges() == []
 
@@ -204,7 +204,7 @@ def test_a_failed_read_exits_1_with_the_server_message(capsys):
 
 
 def test_a_release_target_says_issues_stay_open(capsys):
-    code, _ = run(["5"], gitlab(**{"merge_requests/5": mr(target="release/sprint-163")}))
+    code, _ = run(["5"], gitlab(**{"merge_requests/5": mr(target="release/12")}))
     assert code == merge_pr.MERGED
     assert "not the default branch" in capsys.readouterr().out
 
