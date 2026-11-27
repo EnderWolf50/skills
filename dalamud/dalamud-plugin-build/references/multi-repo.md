@@ -7,7 +7,7 @@ Use this reference when the request covers several repositories at once: "build 
 - Git and the required .NET SDKs installed.
 - Repository owner, organization, or explicit repository list.
 - GitHub credentials only when private repositories or authenticated API access are required.
-- Repositories default to `D:\Dev\<repository>` unless the user requests another location.
+- Repositories default to `<home>\<repository>` in the home repo (`SKILL.md`, Environment) unless the user requests another location.
 
 ## Procedure
 
@@ -24,13 +24,13 @@ Use this reference when the request covers several repositories at once: "build 
    Assign one role: primary application/plugin, shared library, test or mock host, sample, documentation, or archived project. Exclude documentation and archived projects from the build set unless requested. Done when every discovered repository has one role and an explicit include/exclude decision.
 
 3. **Inspect before cloning.**
-   Check `D:\Dev\<repository>` before creating a new checkout. Reuse or update a clean existing checkout only after confirming its remote and branch; existing checkouts may contain user work. Done when each included repository has one safe destination.
+   Check `<home>\<repository>` before creating a new checkout. Reuse or update a clean existing checkout only after confirming its remote and branch; existing checkouts may contain user work. Done when each included repository has one safe destination.
 
 4. **Clone the build set.**
 
    ```bash
-   git clone --recurse-submodules <repository-url> 'D:\Dev\<repository>'
-   git -C 'D:\Dev\<repository>' status --short --branch
+   git clone --recurse-submodules <repository-url> '<home>\<repository>'
+   git -C '<home>\<repository>' status --short --branch
    ```
 
    Done when every included repository and required submodule is available under the requested parent.

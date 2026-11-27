@@ -21,11 +21,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--release-dir", required=True, type=Path)
     parser.add_argument("--plugin-name", required=True)
-    parser.add_argument(
-        "--destination-root",
-        type=Path,
-        default=Path(r"D:\Games\FFXIV Plugins"),
-    )
+    parser.add_argument("--destination-root", required=True, type=Path)
     return parser.parse_args()
 
 

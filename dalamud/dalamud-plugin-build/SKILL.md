@@ -1,6 +1,6 @@
 ---
 name: dalamud-plugin-build
-description: Build, verify, and deploy one Dalamud plugin against a specific DALAMUD_HOME. Use for "clone and build this Dalamud plugin", "build for API 13", "find or pin the last revision before the API upgrade", "verify the latest.zip manifest", "deploy to D:\Games\FFXIV Plugins", moving and consolidating a plugin checkout or worktree, or building every repository from one plugin author (multi-repo). Other Dalamud skills delegate every restore, build, package, and deploy step here.
+description: Build, verify, and deploy one Dalamud plugin against a specific DALAMUD_HOME. Use for "clone and build this Dalamud plugin", "build for API 13", "find or pin the last revision before the API upgrade", "verify the latest.zip manifest", "deploy to the plugin folder", moving and consolidating a plugin checkout or worktree, or building every repository from one plugin author (multi-repo). Other Dalamud skills delegate every restore, build, package, and deploy step here.
 ---
 
 # Dalamud Plugin Build
@@ -10,13 +10,14 @@ Build and package one Dalamud plugin against the intended API environment, inclu
 ## Environment
 
 - Windows with Git, the .NET SDK the repository declares, and `DALAMUD_HOME` pointing at the intended Dalamud installation.
-- Checkouts default to `D:\Dev\<repository>`. Release outputs deploy to `D:\Games\FFXIV Plugins\<PluginName>`.
-- The deploy script is `scripts/deploy_release.py` in this skill's directory: `C:\Users\kerati\.agents\skills\dalamud-plugin-build\scripts\deploy_release.py`.
-- Git Bash may rewrite `/c/Users/...` style paths when they reach native programs. Pass quoted native paths such as `'D:\Dev\Repo'` and confirm with `git rev-parse --show-toplevel`.
+- The **home repo** holds every plugin checkout at `<home>\<repository>` and lists this skill in its `skills-lock.json`. Its gitignored `.local\dalamud.json` holds `deployRoot`, the machine's plugin collection; Release outputs deploy to `<deploy-root>\<PluginName>`.
+- Scripts live in this skill's directory, `${CLAUDE_SKILL_DIR}` in Claude Code; elsewhere, use the folder this SKILL.md was loaded from.
+- Git Bash may rewrite `/c/Users/...` style paths when they reach native programs. Pass quoted native paths such as `'<home>\<repository>'` and confirm with `git rev-parse --show-toplevel`.
 
 Confirm the environment first:
 
 ```bash
+python "${CLAUDE_SKILL_DIR}/scripts/find_home.py"
 printf 'DALAMUD_HOME=%s\n' "$DALAMUD_HOME"
 reg.exe query 'HKCU\Environment' /v DALAMUD_HOME
 reg.exe query 'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment' /v DALAMUD_HOME
@@ -24,17 +25,19 @@ dotnet --info
 git --version
 ```
 
+`find_home.py` prints `home`, `deployRoot`, and the config path. Exit 1 means no home repo sits above this skill or the current directory: ask the user for its path and run the remaining commands from there. A null `deployRoot` means this machine has none recorded: ask the user for the plugin collection folder, then record it with `--set-deploy-root '<folder>'`. Done when both values are known.
+
 ## Procedure
 
 1. **Choose one final checkout path.**
-   Default to `D:\Dev\<repository>` and inspect it before cloning; reuse, update, or pick another path only after seeing what is there. Done when the final path is explicit and no existing checkout will be overwritten.
+   Default to `<home>\<repository>` and inspect it before cloning; reuse, update, or pick another path only after seeing what is there. Done when the final path is explicit and no existing checkout will be overwritten.
 
 2. **Clone and read the authoritative build.**
 
    ```bash
-   git clone --recurse-submodules <repository-url> 'D:\Dev\<repository>'
-   git -C 'D:\Dev\<repository>' fetch --all --tags --prune
-   git -C 'D:\Dev\<repository>' status --short --branch
+   git clone --recurse-submodules <repository-url> '<home>\<repository>'
+   git -C '<home>\<repository>' fetch --all --tags --prune
+   git -C '<home>\<repository>' status --short --branch
    ```
 
    Read `*.sln`, `*.slnx`, `*.csproj`, `global.json`, lock files, the plugin manifest, and `.github/workflows/*`. CI is authoritative for SDK, bootstrap, target project, configuration, and artifact path. Done when the distributable project and expected package path are known.
@@ -51,7 +54,7 @@ git --version
    Find the commit that upgrades to the next API and take its first parent. Prefer an exact tag; otherwise record the full SHA. Done when project or manifest content proves the revision is the last one on the target API. For a lagging regional client the newest tag on the requested API can still be wrong: see `dalamud-regional-client-adaptation`.
 
 4. **Select the checkout topology.**
-   One maintained historical version: `git switch -c api<level> <verified-sha>` then `git submodule update --init --recursive`. Current and historical versions needed at once: keep the current checkout and add `git worktree add --detach 'D:\Dev\<repository>-api<level>' <verified-sha>`, then init its submodules. Done when every checkout has a stated purpose, branch or detached status, and verified SHA.
+   One maintained historical version: `git switch -c api<level> <verified-sha>` then `git submodule update --init --recursive`. Current and historical versions needed at once: keep the current checkout and add `git worktree add --detach '<home>\<repository>-api<level>' <verified-sha>`, then init its submodules. Done when every checkout has a stated purpose, branch or detached status, and verified SHA.
 
 5. **Evaluate the actual Dalamud reference root.**
    Old projects hard-code `$(appdata)\XIVLauncher\addon\Hooks\dev\`. Probe without editing source:
@@ -99,16 +102,16 @@ git --version
 9. **Deploy the Release root.**
 
    ```bash
-   python 'C:\Users\kerati\.agents\skills\dalamud-plugin-build\scripts\deploy_release.py' \
-     --release-dir 'D:\Dev\<repository>\<project>\bin\Release' \
+   python "${CLAUDE_SKILL_DIR}/scripts/deploy_release.py" \
+     --release-dir '<home>\<repository>\<project>\bin\Release' \
      --plugin-name '<PluginName>' \
-     --destination-root 'D:\Games\FFXIV Plugins'
+     --destination-root '<deploy-root>'
    ```
 
    The script creates the destination, copies every Release entry except the direct child named `<PluginName>` (so no `<PluginName>\<PluginName>\...` nesting), and verifies SHA-256 equality per file. It leaves unrelated or stale destination files alone; removing them is a separate, explicit decision. Done when the script reports `DEPLOYED`, `VERIFIED`, and the skipped package directory.
 
 10. **Consolidate worktrees when one folder is wanted.**
-    From a parent directory: `git worktree list --porcelain`, `git worktree remove <historical-worktree>`, `git switch -c api<level> <verified-sha>`, then `mv` into `D:\Dev\<repository>`. Windows refuses to remove a worktree that is the current directory of a running process; change directory first. Rebuild and repeat step 8 after moving. Done when only the requested checkout remains under `D:\Dev` with the right branch, SHA, and package.
+    From a parent directory: `git worktree list --porcelain`, `git worktree remove <historical-worktree>`, `git switch -c api<level> <verified-sha>`, then `mv` into `<home>\<repository>`. Windows refuses to remove a worktree that is the current directory of a running process; change directory first. Rebuild and repeat step 8 after moving. Done when only the requested checkout remains under `<home>` with the right branch, SHA, and package.
 
 ## Pitfalls
 
@@ -129,5 +132,5 @@ Run from the final checkout; package verification must pass before deployment:
 git status --short --branch && git rev-parse --show-toplevel \
 && test -s '<project>/bin/Release/<plugin>/latest.zip' \
 && python -c "import zipfile,json; z=zipfile.ZipFile(r'<project>/bin/Release/<plugin>/latest.zip'); m=json.loads(z.read('<plugin>.json').decode('utf-8-sig')); assert m['DalamudApiLevel']==<level>; print('verified package',m['DalamudApiLevel'],m['AssemblyVersion'])" \
-&& python 'C:\Users\kerati\.agents\skills\dalamud-plugin-build\scripts\deploy_release.py' --release-dir '<project>/bin/Release' --plugin-name '<plugin>' --destination-root 'D:\Games\FFXIV Plugins'
+&& python "${CLAUDE_SKILL_DIR}/scripts/deploy_release.py" --release-dir '<project>/bin/Release' --plugin-name '<plugin>' --destination-root '<deploy-root>'
 ```

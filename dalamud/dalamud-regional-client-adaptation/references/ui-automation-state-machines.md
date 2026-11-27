@@ -17,7 +17,7 @@ Trace the feature end to end rather than stopping at the UI label:
 
 ## AutoDuty API 13: `Retire To -> Inn`
 
-Relevant files in `D:\Dev\AutoDuty`:
+Relevant files in the AutoDuty repository:
 
 - `AutoDuty/Windows/Config.cs`: `RetireMode` UI and `RetireLocationEnum` selector.
 - `AutoDuty/Data/Enums.cs`: `RetireLocation` values.
